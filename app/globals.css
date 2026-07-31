@@ -13,3 +13,11 @@ body {
 h1, h2, h3, .font-display {
   font-family: 'Space Grotesk', sans-serif;
 }
+
+/* Amendment 2: all text in capital letters, everywhere in the app */
+body {
+  text-transform: uppercase;
+}
+input::placeholder, textarea::placeholder {
+  text-transform: uppercase;
+}

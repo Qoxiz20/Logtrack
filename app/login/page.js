@@ -8,6 +8,7 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -15,6 +16,8 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    // Must be set BEFORE signInWithPassword so the session gets stored in the right place
+    window.localStorage.setItem('logtrack-remember', remember ? 'true' : 'false');
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
@@ -52,6 +55,11 @@ export default function LoginPage() {
             className="w-full mb-4 px-3 py-2 rounded-lg border border-depot-700/20 focus:outline-none focus:ring-2 focus:ring-route"
             placeholder="••••••••"
           />
+
+          <label className="flex items-center gap-2 text-sm text-depot-700 mb-4">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Remember me on this device
+          </label>
 
           {error && <p className="text-flag text-sm mb-3">{error}</p>}
 

@@ -70,9 +70,10 @@ export default function Dashboard() {
           {logs.map((log) => {
             const activeErrors = log.status_errors?.filter((e) => !e.resolved).length || 0;
             return (
-              <div
+              <Link
                 key={log.id}
-                className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 flex items-center justify-between"
+                href={`/log/${log.id}`}
+                className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 flex items-center justify-between hover:border-route/40 hover:shadow-md transition cursor-pointer"
               >
                 <div>
                   <p className="font-semibold text-depot-900">{log.driver_name}</p>
@@ -86,7 +87,7 @@ export default function Dashboard() {
                 <div className="flex flex-col items-end gap-1.5">
                   {log.reward_earned && (
                     <span className="bg-bonus-light text-bonus text-xs font-semibold px-2.5 py-1 rounded-full">
-                      🎉 RM50 Bonus
+                      RM50 Bonus
                     </span>
                   )}
                   {activeErrors > 0 && (
@@ -95,7 +96,7 @@ export default function Dashboard() {
                     </span>
                   )}
                 </div>
-              </div>
+              </Link>
             );
           })}
         </div>

@@ -3,22 +3,20 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-
-const REWARD_THRESHOLD = 15000;
-const REWARD_AMOUNT = 50;
-
-const ERROR_TYPES = ['Wrong item delivered', 'Missing item', 'Damaged goods', 'Late delivery', 'Wrong amount charged', 'Other'];
-const DEPARTMENTS = ['Warehouse', 'Sales', 'Dispatch', 'Finance', 'Customer', 'Other'];
+import { REWARD_THRESHOLD, REWARD_AMOUNT, ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
 
 export default function NewLogPage() {
   const router = useRouter();
 
   // --- Part 1: Header ---
   const [driverName, setDriverName] = useState('');
-  const [headerAmount, setHeaderAmount] = useState('');
+  const [foreman1, setForeman1] = useState('');
+  const [foreman2, setForeman2] = useState('');
   const [logDate, setLogDate] = useState(new Date().toISOString().slice(0, 10));
+  // Amendment 1: no manual amount field anymore — it's calculated below from To Delivery rows
 
   // --- Part 2: To Delivery ---
+  // Amendment 3: "invoice" here stores ONLY the digits the user types; "DO-" is added automatically
   const [toDelivery, setToDelivery] = useState([{ invoice: '', customer: '', amount: '' }]);
 
   // --- Part 3: From Delivery ---
@@ -39,17 +37,17 @@ export default function NewLogPage() {
   const updateRow = (setter) => (index, field, value) =>
     setter((rows) => rows.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
 
-  // --- Live reward calculation ---
+  // Amendment 1: the top total is now fully automatic — it's just the sum of To Delivery rows
   const toDeliveryTotal = toDelivery.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0);
-  const hasUnresolvedError = errors.length > 0; // any flagged error = not eligible yet
-  const rewardEarned = toDeliveryTotal > REWARD_THRESHOLD && !hasUnresolvedError;
+  // Errors added here are always freshly flagged (not yet resolved), so pass resolved: false for each
+  const rewardEarned = computeRewardEarned(toDeliveryTotal, errors.map((e) => ({ department: e.department, resolved: false })));
 
   async function handleSubmit(e) {
     e.preventDefault();
     setSubmitError('');
 
-    if (!driverName || !headerAmount || !logDate) {
-      setSubmitError('Please fill in Driver, Amount, and Date at the top.');
+    if (!driverName || !logDate) {
+      setSubmitError('Please fill in Driver and Date at the top.');
       return;
     }
 
@@ -61,7 +59,9 @@ export default function NewLogPage() {
         .from('dispatch_logs')
         .insert({
           driver_name: driverName,
-          header_amount: parseFloat(headerAmount),
+          foreman_1: foreman1,
+          foreman_2: foreman2,
+          header_amount: toDeliveryTotal, // now auto-calculated, same as the To Delivery total
           log_date: logDate,
           logged_by: session?.user?.id,
           to_delivery_total: toDeliveryTotal,
@@ -79,7 +79,7 @@ export default function NewLogPage() {
         await supabase.from('to_delivery_items').insert(
           validToDelivery.map((r) => ({
             dispatch_log_id: logId,
-            invoice_number: r.invoice,
+            invoice_number: `DO-${r.invoice}`, // amendment 3
             customer: r.customer,
             amount: parseFloat(r.amount),
           }))
@@ -104,7 +104,7 @@ export default function NewLogPage() {
         await supabase.from('status_errors').insert(
           errors.map((r) => ({
             dispatch_log_id: logId,
-            invoice_number: r.invoice,
+            invoice_number: r.invoice ? `DO-${r.invoice}` : '',
             error_type: r.errorType,
             department: r.department,
             resolved: false,
@@ -136,9 +136,18 @@ export default function NewLogPage() {
               <input value={driverName} onChange={(e) => setDriverName(e.target.value)}
                 className="input" placeholder="Driver name" />
             </Field>
-            <Field label="Amount (RM)">
-              <input type="number" step="0.01" value={headerAmount} onChange={(e) => setHeaderAmount(e.target.value)}
-                className="input" placeholder="0.00" />
+            <Field label="Foreman 1">
+              <input value={foreman1} onChange={(e) => setForeman1(e.target.value)}
+                className="input" placeholder="Foreman 1 name" />
+            </Field>
+            <Field label="Foreman 2">
+              <input value={foreman2} onChange={(e) => setForeman2(e.target.value)}
+                className="input" placeholder="Foreman 2 name" />
+            </Field>
+            <Field label="Total Amount (RM) — auto">
+              <div className="input bg-depot-100 text-depot-700 font-semibold">
+                {toDeliveryTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </div>
             </Field>
             <Field label="Date">
               <input type="date" value={logDate} onChange={(e) => setLogDate(e.target.value)}
@@ -155,8 +164,7 @@ export default function NewLogPage() {
           </div>
           {toDelivery.map((row, i) => (
             <RowGroup key={i} onRemove={toDelivery.length > 1 ? () => removeRow(setToDelivery)(i) : null}>
-              <input value={row.invoice} onChange={(e) => updateRow(setToDelivery)(i, 'invoice', e.target.value)}
-                className="input" placeholder="Invoice #" />
+              <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setToDelivery)(i, 'invoice', v)} />
               <input value={row.customer} onChange={(e) => updateRow(setToDelivery)(i, 'customer', e.target.value)}
                 className="input" placeholder="Customer" />
               <input type="number" step="0.01" value={row.amount} onChange={(e) => updateRow(setToDelivery)(i, 'amount', e.target.value)}
@@ -212,8 +220,7 @@ export default function NewLogPage() {
                 <option value="">Which department's fault?</option>
                 {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
-              <input value={row.invoice} onChange={(e) => updateRow(setErrors)(i, 'invoice', e.target.value)}
-                className="input" placeholder="Which invoice?" />
+              <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setErrors)(i, 'invoice', v)} />
             </RowGroup>
           ))}
           <AddButton
@@ -227,8 +234,11 @@ export default function NewLogPage() {
         <section className={`rounded-xl p-4 border ${rewardEarned ? 'bg-bonus-light border-bonus/30' : 'bg-depot-100 border-depot-700/10'}`}>
           <p className={`text-sm font-medium ${rewardEarned ? 'text-bonus' : 'text-depot-700/70'}`}>
             {rewardEarned
-              ? `🎉 This log qualifies for the RM${REWARD_AMOUNT} bonus (To Delivery total exceeds RM${REWARD_THRESHOLD.toLocaleString()}, no active errors).`
+              ? `This log qualifies for the RM${REWARD_AMOUNT} bonus (To Delivery total exceeds RM${REWARD_THRESHOLD.toLocaleString()}, no active errors).`
               : `Not yet eligible for the RM${REWARD_AMOUNT} bonus. Needs To Delivery total over RM${REWARD_THRESHOLD.toLocaleString()} and zero flagged errors.`}
+          </p>
+          <p className="text-xs text-depot-700/50 mt-1">
+            Note: once resolved, Sales/Customer errors still allow the bonus — but Operation/Logistics errors permanently disqualify this log.
           </p>
         </section>
 
@@ -266,6 +276,22 @@ function Field({ label, children }) {
       <span className="block text-xs font-medium text-depot-700/70 mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+// Amendment 3: "DO-" prefix is fixed and shown; user only types the digits after it
+function InvoiceInput({ value, onChange }) {
+  return (
+    <div className="flex items-center border border-depot-700/15 rounded-lg overflow-hidden bg-white">
+      <span className="bg-depot-100 px-2.5 py-2 text-sm text-depot-700/70 font-semibold">DO-</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
+        className="flex-1 px-2 py-2 text-sm focus:outline-none min-w-0"
+        placeholder="06244"
+        inputMode="numeric"
+      />
+    </div>
   );
 }
 
