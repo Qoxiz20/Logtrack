@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
+import NavDrawer from '@/components/NavDrawer';
 
 export default function Dashboard() {
   const router = useRouter();
@@ -41,7 +42,10 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-paper">
       <header className="bg-depot-900 px-6 py-4 flex items-center justify-between">
-        <h1 className="font-display text-xl text-paper font-bold">LogTrack</h1>
+        <div className="flex items-center gap-3">
+          <NavDrawer />
+          <h1 className="font-display text-xl text-paper font-bold">LogTrack</h1>
+        </div>
         <div className="flex gap-3">
           <Link
             href="/new-log"

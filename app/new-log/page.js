@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { REWARD_THRESHOLD, REWARD_AMOUNT, ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
+import NavDrawer from '@/components/NavDrawer';
 
 export default function NewLogPage() {
   const router = useRouter();
@@ -12,8 +13,24 @@ export default function NewLogPage() {
   const [driverName, setDriverName] = useState('');
   const [foreman1, setForeman1] = useState('');
   const [foreman2, setForeman2] = useState('');
+  const [loaderName, setLoaderName] = useState(''); // Amendment 5: free text, optional
   const [logDate, setLogDate] = useState(new Date().toISOString().slice(0, 10));
   // Amendment 1: no manual amount field anymore — it's calculated below from To Delivery rows
+
+  // Amendment 2 (people-list dropdowns): fetch the active drivers & foremen once on page load
+  const [driversList, setDriversList] = useState([]);
+  const [foremenList, setForemenList] = useState([]);
+
+  useEffect(() => {
+    async function loadPeople() {
+      const { data } = await supabase.from('people').select('id, name, role').eq('active', true).order('name');
+      if (data) {
+        setDriversList(data.filter((p) => p.role === 'driver'));
+        setForemenList(data.filter((p) => p.role === 'foreman'));
+      }
+    }
+    loadPeople();
+  }, []);
 
   // --- Part 2: To Delivery ---
   // Amendment 3: "invoice" here stores ONLY the digits the user types; "DO-" is added automatically
@@ -61,6 +78,7 @@ export default function NewLogPage() {
           driver_name: driverName,
           foreman_1: foreman1,
           foreman_2: foreman2,
+          loader_name: loaderName, // Amendment 5
           header_amount: toDeliveryTotal, // now auto-calculated, same as the To Delivery total
           log_date: logDate,
           logged_by: session?.user?.id,
@@ -107,6 +125,7 @@ export default function NewLogPage() {
             invoice_number: r.invoice ? `DO-${r.invoice}` : '',
             error_type: r.errorType,
             department: r.department,
+            description: r.description || null, // Amendment 7
             resolved: false,
           }))
         );
@@ -122,7 +141,8 @@ export default function NewLogPage() {
 
   return (
     <div className="min-h-screen bg-paper pb-24">
-      <header className="bg-depot-900 px-6 py-4">
+      <header className="bg-depot-900 px-6 py-4 flex items-center gap-3">
+        <NavDrawer />
         <h1 className="font-display text-xl text-paper font-bold">New Dispatch Log</h1>
       </header>
 
@@ -133,16 +153,26 @@ export default function NewLogPage() {
           <h2 className="font-display font-semibold text-depot-900 mb-4">Dispatch Details</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Field label="Driver">
-              <input value={driverName} onChange={(e) => setDriverName(e.target.value)}
-                className="input" placeholder="Driver name" />
+              <select value={driverName} onChange={(e) => setDriverName(e.target.value)} className="input">
+                <option value="">Select driver</option>
+                {driversList.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
+              </select>
             </Field>
             <Field label="Foreman 1">
-              <input value={foreman1} onChange={(e) => setForeman1(e.target.value)}
-                className="input" placeholder="Foreman 1 name" />
+              <select value={foreman1} onChange={(e) => setForeman1(e.target.value)} className="input">
+                <option value="">Select foreman 1</option>
+                {foremenList.filter((f) => f.name !== foreman2).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+              </select>
             </Field>
             <Field label="Foreman 2">
-              <input value={foreman2} onChange={(e) => setForeman2(e.target.value)}
-                className="input" placeholder="Foreman 2 name" />
+              <select value={foreman2} onChange={(e) => setForeman2(e.target.value)} className="input">
+                <option value="">Select foreman 2</option>
+                {foremenList.filter((f) => f.name !== foreman1).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Loader (optional)">
+              <input value={loaderName} onChange={(e) => setLoaderName(e.target.value)}
+                className="input" placeholder="Loader name" />
             </Field>
             <Field label="Total Amount (RM) — auto">
               <div className="input bg-depot-100 text-depot-700 font-semibold">
@@ -211,20 +241,30 @@ export default function NewLogPage() {
             Flag any error found in the To Delivery section. It stays active until marked resolved.
           </p>
           {errors.map((row, i) => (
-            <RowGroup key={i} onRemove={() => removeRow(setErrors)(i)}>
-              <select value={row.errorType} onChange={(e) => updateRow(setErrors)(i, 'errorType', e.target.value)} className="input">
-                <option value="">What error?</option>
-                {ERROR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <select value={row.department} onChange={(e) => updateRow(setErrors)(i, 'department', e.target.value)} className="input">
-                <option value="">Which department's fault?</option>
-                {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-              <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setErrors)(i, 'invoice', v)} />
-            </RowGroup>
+            <div key={i} className="mb-3 pb-3 border-b border-depot-700/5 last:border-0">
+              <RowGroup onRemove={() => removeRow(setErrors)(i)}>
+                <select value={row.errorType} onChange={(e) => updateRow(setErrors)(i, 'errorType', e.target.value)} className="input">
+                  <option value="">What error?</option>
+                  {ERROR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select value={row.department} onChange={(e) => updateRow(setErrors)(i, 'department', e.target.value)} className="input">
+                  <option value="">Which department's fault?</option>
+                  {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setErrors)(i, 'invoice', v)} />
+              </RowGroup>
+              {/* Amendment 7: description box for special cases */}
+              <textarea
+                value={row.description || ''}
+                onChange={(e) => updateRow(setErrors)(i, 'description', e.target.value)}
+                className="input mt-2"
+                rows={2}
+                placeholder="Describe the special case (optional)"
+              />
+            </div>
           ))}
           <AddButton
-            onClick={() => addRow(setErrors)({ errorType: '', department: '', invoice: '' })}
+            onClick={() => addRow(setErrors)({ errorType: '', department: '', invoice: '', description: '' })}
             label="Flag an error"
             variant="flag"
           />

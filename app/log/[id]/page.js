@@ -5,6 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
+import NavDrawer from '@/components/NavDrawer';
 
 export default function LogDetailPage() {
   const router = useRouter();
@@ -18,7 +19,9 @@ export default function LogDetailPage() {
   // Small "add new item" inputs for the editable sections
   const [newFromDelivery, setNewFromDelivery] = useState('');
   const [newMissionTask, setNewMissionTask] = useState('');
-  const [newError, setNewError] = useState({ errorType: '', department: '', invoice: '' });
+  const [newError, setNewError] = useState({ errorType: '', department: '', invoice: '', description: '' });
+  // Amendment 6: add more DO after saving
+  const [newToDelivery, setNewToDelivery] = useState({ invoice: '', customer: '', amount: '' });
 
   useEffect(() => {
     load();
@@ -31,7 +34,6 @@ export default function LogDetailPage() {
       router.replace('/login');
       return;
     }
-    // Amendment 5: check if this account is an admin (set via Supabase user metadata)
     const { data: { user } } = await supabase.auth.getUser();
     setIsAdmin(user?.user_metadata?.role === 'admin');
 
@@ -42,7 +44,7 @@ export default function LogDetailPage() {
         to_delivery_items ( id, invoice_number, customer, amount, returned ),
         from_delivery_items ( id, description ),
         mission_items ( id, task, done ),
-        status_errors ( id, invoice_number, error_type, department, resolved )
+        status_errors ( id, invoice_number, error_type, department, description, resolved )
       `)
       .eq('id', id)
       .single();
@@ -74,6 +76,28 @@ export default function LogDetailPage() {
     load();
   }
 
+  // --- Amendment 6: add a new DO after saving. No delete option — additions only. ---
+  async function addToDelivery() {
+    if (!newToDelivery.invoice || !newToDelivery.customer || !newToDelivery.amount) return;
+    await supabase.from('to_delivery_items').insert({
+      dispatch_log_id: id,
+      invoice_number: `DO-${newToDelivery.invoice}`,
+      customer: newToDelivery.customer,
+      amount: parseFloat(newToDelivery.amount),
+      returned: false,
+    });
+
+    // Recalculate the running total from every To Delivery row (existing + the new one),
+    // then re-check whether this pushes the log over the RM15,000 bonus threshold.
+    const { data: items } = await supabase.from('to_delivery_items').select('amount').eq('dispatch_log_id', id);
+    const newTotal = items.reduce((sum, r) => sum + Number(r.amount), 0);
+    await supabase.from('dispatch_logs').update({ to_delivery_total: newTotal, header_amount: newTotal }).eq('id', id);
+
+    setNewToDelivery({ invoice: '', customer: '', amount: '' });
+    await recheckReward();
+    load();
+  }
+
   // --- Amendment 2: log what was brought back from delivery ---
   async function addFromDelivery() {
     if (!newFromDelivery.trim()) return;
@@ -99,6 +123,7 @@ export default function LogDetailPage() {
   }
 
   // --- Amendment 4: fill in final error status after driver returns ---
+  // Amendment 7: description is set once here and not editable afterwards (write-once)
   async function addError() {
     if (!newError.errorType || !newError.department) return;
     await supabase.from('status_errors').insert({
@@ -106,9 +131,10 @@ export default function LogDetailPage() {
       invoice_number: newError.invoice ? `DO-${newError.invoice}` : '',
       error_type: newError.errorType,
       department: newError.department,
+      description: newError.description || null,
       resolved: false,
     });
-    setNewError({ errorType: '', department: '', invoice: '' });
+    setNewError({ errorType: '', department: '', invoice: '', description: '' });
     await recheckReward();
     load();
   }
@@ -118,7 +144,7 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- Amendment 5: admin-only delete ---
+  // --- Admin-only delete ---
   async function deleteLog() {
     if (!confirm(`Delete this dispatch log for ${log.driver_name}? This cannot be undone.`)) return;
     setDeleting(true);
@@ -144,7 +170,10 @@ export default function LogDetailPage() {
   return (
     <div className="min-h-screen bg-paper pb-16">
       <header className="bg-depot-900 px-6 py-4 flex items-center justify-between">
-        <h1 className="font-display text-xl text-paper font-bold">Dispatch Log</h1>
+        <div className="flex items-center gap-3">
+          <NavDrawer />
+          <h1 className="font-display text-xl text-paper font-bold">Dispatch Log</h1>
+        </div>
         <Link href="/dashboard" className="text-depot-100/70 text-sm hover:text-paper">← Back to Dashboard</Link>
       </header>
 
@@ -160,6 +189,9 @@ export default function LogDetailPage() {
                   Foreman: {[log.foreman_1, log.foreman_2].filter(Boolean).join(' · ')}
                 </p>
               )}
+              {log.loader_name && (
+                <p className="text-xs text-depot-700/60 mt-0.5">Loader: {log.loader_name}</p>
+              )}
             </div>
             {log.reward_earned && (
               <span className="bg-bonus-light text-bonus text-xs font-semibold px-2.5 py-1 rounded-full">RM50 Bonus</span>
@@ -168,7 +200,7 @@ export default function LogDetailPage() {
           <p className="text-sm text-depot-700 mt-3">Total Amount: <strong>RM {Number(log.header_amount).toLocaleString()}</strong></p>
         </section>
 
-        {/* AMENDMENT 1: To Delivery — tick which DO arrived back */}
+        {/* AMENDMENT 1 & 6: To Delivery — tick arrived back, add more DO (no delete) */}
         <DetailSection title="To Delivery — mark arrived back">
           {log.to_delivery_items.length === 0 && <Empty />}
           {log.to_delivery_items.map((item) => (
@@ -180,6 +212,17 @@ export default function LogDetailPage() {
               <span className="font-medium text-sm">RM {Number(item.amount).toLocaleString()}</span>
             </label>
           ))}
+          <p className="text-xs text-depot-700/60 mt-4 mb-2">Add another DO:</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <InvoiceInput value={newToDelivery.invoice} onChange={(v) => setNewToDelivery({ ...newToDelivery, invoice: v })} />
+            <input value={newToDelivery.customer} onChange={(e) => setNewToDelivery({ ...newToDelivery, customer: e.target.value })}
+              className="input" placeholder="Customer" />
+            <input type="number" step="0.01" value={newToDelivery.amount} onChange={(e) => setNewToDelivery({ ...newToDelivery, amount: e.target.value })}
+              className="input" placeholder="Amount (RM)" />
+          </div>
+          <button onClick={addToDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
+            + Add DO
+          </button>
         </DetailSection>
 
         {/* AMENDMENT 2: From Delivery — editable list */}
@@ -214,7 +257,7 @@ export default function LogDetailPage() {
           </div>
         </DetailSection>
 
-        {/* AMENDMENT 4: Status — resolve existing, add new after driver returns */}
+        {/* AMENDMENT 4 & 7: Status — resolve existing, add new with description */}
         <DetailSection title="Status">
           {log.status_errors.length === 0 && <p className="text-sm text-bonus mb-3">No errors flagged.</p>}
           {log.status_errors.map((err) => (
@@ -222,10 +265,11 @@ export default function LogDetailPage() {
               <div className="text-sm">
                 <p className="font-medium text-depot-900">{err.invoice_number} — {err.error_type}</p>
                 <p className="text-depot-700/60 text-xs">Department: {err.department}</p>
+                {err.description && <p className="text-depot-700/50 text-xs mt-0.5 italic">{err.description}</p>}
               </div>
               <button
                 onClick={() => toggleResolved(err.id, err.resolved)}
-                className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${
                   err.resolved ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'
                 }`}
               >
@@ -255,6 +299,14 @@ export default function LogDetailPage() {
               />
             </div>
           </div>
+          {/* Amendment 7: description box, written once when the error is flagged */}
+          <textarea
+            value={newError.description}
+            onChange={(e) => setNewError({ ...newError, description: e.target.value })}
+            className="input mt-2"
+            rows={2}
+            placeholder="Describe the special case (optional)"
+          />
           <button onClick={addError} className="mt-2 text-flag border border-flag/30 hover:bg-flag-light text-sm font-medium px-3 py-1.5 rounded-lg">
             + Flag this error
           </button>
@@ -263,7 +315,7 @@ export default function LogDetailPage() {
           </p>
         </DetailSection>
 
-        {/* AMENDMENT 5: admin-only delete */}
+        {/* Admin-only delete */}
         {isAdmin && (
           <button
             onClick={deleteLog}
@@ -289,6 +341,22 @@ export default function LogDetailPage() {
           box-shadow: 0 0 0 2px #3E7CB1;
         }
       `}</style>
+    </div>
+  );
+}
+
+// Amendment 6: same "DO-" prefixed invoice input pattern as the New Dispatch Log form
+function InvoiceInput({ value, onChange }) {
+  return (
+    <div className="flex items-center border border-depot-700/15 rounded-lg overflow-hidden bg-white">
+      <span className="bg-depot-100 px-2.5 py-2 text-sm text-depot-700/70 font-semibold">DO-</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ''))}
+        className="flex-1 px-2 py-2 text-sm focus:outline-none min-w-0"
+        placeholder="06244"
+        inputMode="numeric"
+      />
     </div>
   );
 }
