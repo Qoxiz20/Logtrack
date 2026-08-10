@@ -16,17 +16,31 @@ export default function LogDetailPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
+  const [driversList, setDriversList] = useState([]);
+  const [foremenList, setForemenList] = useState([]);
+  const [editingHeader, setEditingHeader] = useState(false);
+  const [headerForm, setHeaderForm] = useState(null);
+
   // Small "add new item" inputs for the editable sections
-  const [newFromDelivery, setNewFromDelivery] = useState('');
+  const [newFromDelivery, setNewFromDelivery] = useState({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' });
   const [newMissionTask, setNewMissionTask] = useState('');
   const [newError, setNewError] = useState({ errorType: '', department: '', invoice: '', description: '' });
-  // Amendment 6: add more DO after saving
   const [newToDelivery, setNewToDelivery] = useState({ invoice: '', customer: '', amount: '' });
 
   useEffect(() => {
     load();
+    loadPeople();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function loadPeople() {
+    const { data } = await supabase.from('people').select('id, name, role').eq('active', true).order('name');
+    if (data) {
+      setDriversList(data.filter((p) => p.role === 'driver'));
+      setForemenList(data.filter((p) => p.role === 'foreman'));
+    }
+  }
 
   async function load() {
     const { data: { session } } = await supabase.auth.getSession();
@@ -42,7 +56,7 @@ export default function LogDetailPage() {
       .select(`
         *,
         to_delivery_items ( id, invoice_number, customer, amount, returned ),
-        from_delivery_items ( id, description ),
+        from_delivery_items ( id, type, customer, do_number, cash_amount, description, collected ),
         mission_items ( id, task, done ),
         status_errors ( id, invoice_number, error_type, department, description, resolved )
       `)
@@ -57,9 +71,6 @@ export default function LogDetailPage() {
     setLoading(false);
   }
 
-  // Re-checks whether the log still qualifies for the RM50 bonus, using the shared rule:
-  // total > RM15,000, zero unresolved errors, and no Operation/Logistics error at all
-  // (even resolved ones from those departments permanently disqualify the bonus).
   async function recheckReward() {
     const { data: freshLog } = await supabase
       .from('dispatch_logs')
@@ -70,13 +81,38 @@ export default function LogDetailPage() {
     await supabase.from('dispatch_logs').update({ reward_earned: qualifies }).eq('id', id);
   }
 
-  // --- Amendment 1: tick which DO has arrived back ---
+  // --- Amendment 1: edit header fields, only available while not completed ---
+  function startEditHeader() {
+    setHeaderForm({
+      driver_name: log.driver_name || '',
+      foreman_1: log.foreman_1 || '',
+      foreman_2: log.foreman_2 || '',
+      loader_name: log.loader_name || '',
+      plate_number: log.plate_number || '',
+      log_date: log.log_date,
+    });
+    setEditingHeader(true);
+  }
+  async function saveHeader() {
+    await supabase.from('dispatch_logs').update(headerForm).eq('id', id);
+    setEditingHeader(false);
+    load();
+  }
+
+  // --- Amendment 1: admin-only COMPLETE toggle ---
+  async function toggleCompleted() {
+    const turningOn = !log.completed;
+    if (!turningOn && !isAdmin) return; // staff can tick, but never untick
+    if (turningOn && !confirm('Mark this dispatch log as COMPLETE? No more changes can be made to it until an admin un-ticks it.')) return;
+    await supabase.from('dispatch_logs').update({ completed: !log.completed }).eq('id', id);
+    load();
+  }
+
   async function toggleReturned(itemId, current) {
     await supabase.from('to_delivery_items').update({ returned: !current }).eq('id', itemId);
     load();
   }
 
-  // --- Amendment 6: add a new DO after saving. No delete option — additions only. ---
   async function addToDelivery() {
     if (!newToDelivery.invoice || !newToDelivery.customer || !newToDelivery.amount) return;
     await supabase.from('to_delivery_items').insert({
@@ -86,31 +122,37 @@ export default function LogDetailPage() {
       amount: parseFloat(newToDelivery.amount),
       returned: false,
     });
-
-    // Recalculate the running total from every To Delivery row (existing + the new one),
-    // then re-check whether this pushes the log over the RM15,000 bonus threshold.
     const { data: items } = await supabase.from('to_delivery_items').select('amount').eq('dispatch_log_id', id);
     const newTotal = items.reduce((sum, r) => sum + Number(r.amount), 0);
     await supabase.from('dispatch_logs').update({ to_delivery_total: newTotal, header_amount: newTotal }).eq('id', id);
-
     setNewToDelivery({ invoice: '', customer: '', amount: '' });
     await recheckReward();
     load();
   }
 
-  // --- Amendment 2: log what was brought back from delivery ---
+  // --- Amendment 6: From Delivery — Cash or Stock, add only, no delete ---
   async function addFromDelivery() {
-    if (!newFromDelivery.trim()) return;
-    await supabase.from('from_delivery_items').insert({ dispatch_log_id: id, description: newFromDelivery.trim() });
-    setNewFromDelivery('');
+    const r = newFromDelivery;
+    if (r.type === 'cash' && !(r.customer && r.doNumber && r.cashAmount)) return;
+    if (r.type === 'stock' && !(r.customer && r.doNumber && r.description)) return;
+    await supabase.from('from_delivery_items').insert({
+      dispatch_log_id: id,
+      type: r.type,
+      customer: r.customer,
+      do_number: `DO-${r.doNumber}`,
+      cash_amount: r.type === 'cash' ? parseFloat(r.cashAmount) : null,
+      description: r.type === 'stock' ? r.description : null,
+      collected: false,
+    });
+    setNewFromDelivery({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' });
     load();
   }
-  async function deleteFromDelivery(itemId) {
-    await supabase.from('from_delivery_items').delete().eq('id', itemId);
+  // Admin-only — enforced in the UI here, and the completed-lock is enforced at the database level too
+  async function toggleCollected(itemId, current) {
+    await supabase.from('from_delivery_items').update({ collected: !current }).eq('id', itemId);
     load();
   }
 
-  // --- Amendment 3: tick which mission is completed ---
   async function toggleMissionDone(itemId, current) {
     await supabase.from('mission_items').update({ done: !current }).eq('id', itemId);
     load();
@@ -122,8 +164,6 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- Amendment 4: fill in final error status after driver returns ---
-  // Amendment 7: description is set once here and not editable afterwards (write-once)
   async function addError() {
     if (!newError.errorType || !newError.department) return;
     await supabase.from('status_errors').insert({
@@ -144,7 +184,6 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- Admin-only delete ---
   async function deleteLog() {
     if (!confirm(`Delete this dispatch log for ${log.driver_name}? This cannot be undone.`)) return;
     setDeleting(true);
@@ -167,6 +206,8 @@ export default function LogDetailPage() {
   );
   if (!log) return <div className="min-h-screen bg-paper flex items-center justify-center text-depot-700">Log not found.</div>;
 
+  const locked = log.completed;
+
   return (
     <div className="min-h-screen bg-paper pb-16">
       <header className="bg-depot-900 px-6 py-4 flex items-center justify-between">
@@ -179,85 +220,172 @@ export default function LogDetailPage() {
 
       <main className="max-w-2xl mx-auto px-4 py-6 space-y-6">
 
+        {/* HEADER — Amendment 2: date is now the biggest element */}
         <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="font-display text-lg font-semibold text-depot-900">{log.driver_name}</h2>
-              <p className="text-sm text-depot-700/70">{new Date(log.log_date).toLocaleDateString()}</p>
+              <p className="font-display text-2xl font-bold text-depot-900 leading-tight">
+                {new Date(log.log_date).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+              </p>
+              <p className="text-sm text-depot-700/70 mt-0.5">{log.driver_name}</p>
               {(log.foreman_1 || log.foreman_2) && (
-                <p className="text-xs text-depot-700/60 mt-1">
-                  Foreman: {[log.foreman_1, log.foreman_2].filter(Boolean).join(' · ')}
-                </p>
+                <p className="text-xs text-depot-700/60 mt-1">Foreman: {[log.foreman_1, log.foreman_2].filter(Boolean).join(' · ')}</p>
               )}
-              {log.loader_name && (
-                <p className="text-xs text-depot-700/60 mt-0.5">Loader: {log.loader_name}</p>
-              )}
+              {log.loader_name && <p className="text-xs text-depot-700/60 mt-0.5">Loader: {log.loader_name}</p>}
+              {log.plate_number && <p className="text-xs text-depot-700/60 mt-0.5">Plate: {log.plate_number}</p>}
             </div>
-            {log.reward_earned && (
-              <span className="bg-bonus-light text-bonus text-xs font-semibold px-2.5 py-1 rounded-full">RM50 Bonus</span>
-            )}
+            <div className="flex flex-col items-end gap-1.5">
+              {log.reward_earned && <span className="bg-bonus-light text-bonus text-xs font-semibold px-2.5 py-1 rounded-full">RM50 Bonus</span>}
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${locked ? 'bg-bonus-light text-bonus' : 'bg-depot-100 text-depot-700/70'}`}>
+                {locked ? 'COMPLETE' : 'In Progress'}
+              </span>
+            </div>
           </div>
           <p className="text-sm text-depot-700 mt-3">Total Amount: <strong>RM {Number(log.header_amount).toLocaleString()}</strong></p>
+
+          {/* Amendment 1: header edit, only while not completed */}
+          {!locked && !editingHeader && (
+            <button onClick={startEditHeader} className="mt-3 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
+              Edit driver / foreman / loader / plate / date
+            </button>
+          )}
+          {!locked && editingHeader && headerForm && (
+            <div className="mt-4 pt-4 border-t border-depot-700/10 grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <select value={headerForm.driver_name} onChange={(e) => setHeaderForm({ ...headerForm, driver_name: e.target.value })} className="input">
+                <option value="">Select driver</option>
+                {driversList.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
+              </select>
+              <select value={headerForm.foreman_1} onChange={(e) => setHeaderForm({ ...headerForm, foreman_1: e.target.value })} className="input">
+                <option value="">Select foreman 1</option>
+                {foremenList.filter((f) => f.name !== headerForm.foreman_2).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+              </select>
+              <select value={headerForm.foreman_2} onChange={(e) => setHeaderForm({ ...headerForm, foreman_2: e.target.value })} className="input">
+                <option value="">Select foreman 2</option>
+                {foremenList.filter((f) => f.name !== headerForm.foreman_1).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+              </select>
+              <input value={headerForm.loader_name} onChange={(e) => setHeaderForm({ ...headerForm, loader_name: e.target.value })} className="input" placeholder="Loader name" />
+              <input value={headerForm.plate_number} onChange={(e) => setHeaderForm({ ...headerForm, plate_number: e.target.value })} className="input" placeholder="Plate number" />
+              <input type="date" value={headerForm.log_date} onChange={(e) => setHeaderForm({ ...headerForm, log_date: e.target.value })} className="input" />
+              <div className="sm:col-span-3 flex gap-2 mt-1">
+                <button onClick={saveHeader} className="bg-route text-white text-sm font-medium px-4 py-2 rounded-lg">Save Changes</button>
+                <button onClick={() => setEditingHeader(false)} className="text-depot-700/60 text-sm px-3 py-2">Cancel</button>
+              </div>
+            </div>
+          )}
         </section>
 
-        {/* AMENDMENT 1 & 6: To Delivery — tick arrived back, add more DO (no delete) */}
+        {/* To Delivery */}
         <DetailSection title="To Delivery — mark arrived back">
           {log.to_delivery_items.length === 0 && <Empty />}
           {log.to_delivery_items.map((item) => (
             <label key={item.id} className="flex items-center justify-between py-1.5 border-b border-depot-700/5 last:border-0 cursor-pointer">
               <span className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={item.returned} onChange={() => toggleReturned(item.id, item.returned)} />
+                <input type="checkbox" checked={item.returned} disabled={locked} onChange={() => toggleReturned(item.id, item.returned)} />
                 <span className={item.returned ? 'text-depot-700/50' : ''}>{item.invoice_number} — {item.customer}</span>
               </span>
               <span className="font-medium text-sm">RM {Number(item.amount).toLocaleString()}</span>
             </label>
           ))}
-          <p className="text-xs text-depot-700/60 mt-4 mb-2">Add another DO:</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <InvoiceInput value={newToDelivery.invoice} onChange={(v) => setNewToDelivery({ ...newToDelivery, invoice: v })} />
-            <input value={newToDelivery.customer} onChange={(e) => setNewToDelivery({ ...newToDelivery, customer: e.target.value })}
-              className="input" placeholder="Customer" />
-            <input type="number" step="0.01" value={newToDelivery.amount} onChange={(e) => setNewToDelivery({ ...newToDelivery, amount: e.target.value })}
-              className="input" placeholder="Amount (RM)" />
-          </div>
-          <button onClick={addToDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
-            + Add DO
-          </button>
+          {!locked && (
+            <>
+              <p className="text-xs text-depot-700/60 mt-4 mb-2">Add another DO:</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <InvoiceInput value={newToDelivery.invoice} onChange={(v) => setNewToDelivery({ ...newToDelivery, invoice: v })} />
+                <input value={newToDelivery.customer} onChange={(e) => setNewToDelivery({ ...newToDelivery, customer: e.target.value })}
+                  className="input" placeholder="Customer" />
+                <input type="number" step="0.01" value={newToDelivery.amount} onChange={(e) => setNewToDelivery({ ...newToDelivery, amount: e.target.value })}
+                  className="input" placeholder="Amount (RM)" />
+              </div>
+              <button onClick={addToDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
+                + Add DO
+              </button>
+            </>
+          )}
         </DetailSection>
 
-        {/* AMENDMENT 2: From Delivery — editable list */}
+        {/* Amendment 6: From Delivery — Cash / Stock */}
         <DetailSection title="From Delivery">
           {log.from_delivery_items.length === 0 && <Empty />}
           {log.from_delivery_items.map((item) => (
-            <div key={item.id} className="flex items-center justify-between text-sm py-1.5 border-b border-depot-700/5 last:border-0">
-              <span>{item.description}</span>
-              <button onClick={() => deleteFromDelivery(item.id)} className="text-depot-700/40 hover:text-flag text-lg px-1">×</button>
+            <div key={item.id} className="py-2 border-b border-depot-700/5 last:border-0">
+              {item.type === 'cash' ? (
+                <div className="flex items-center justify-between">
+                  <div className="text-sm">
+                    <p className="font-medium text-depot-900">Cash RM {Number(item.cash_amount).toLocaleString()} — {item.customer}</p>
+                    <p className="text-xs text-depot-700/60">{item.do_number}</p>
+                  </div>
+                  {isAdmin && !locked ? (
+                    <button
+                      onClick={() => toggleCollected(item.id, item.collected)}
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${item.collected ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'}`}
+                    >
+                      {item.collected ? 'Collected' : 'Pending — mark collected'}
+                    </button>
+                  ) : (
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${item.collected ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'}`}>
+                      {item.collected ? 'Collected' : 'Pending'}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm">
+                  <p className="font-medium text-depot-900">{item.customer} — {item.do_number}</p>
+                  <p className="text-xs text-depot-700/60">{item.description}</p>
+                </div>
+              )}
             </div>
           ))}
-          <div className="flex gap-2 mt-3">
-            <input value={newFromDelivery} onChange={(e) => setNewFromDelivery(e.target.value)}
-              className="input flex-1" placeholder="What was brought back?" />
-            <button onClick={addFromDelivery} className="bg-route text-white text-sm font-medium px-3 rounded-lg">Add</button>
-          </div>
+
+          {!locked && (
+            <div className="mt-4">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'cash' })}
+                  className={`text-sm font-medium py-2 rounded-lg border ${newFromDelivery.type === 'cash' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
+                  Cash
+                </button>
+                <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'stock' })}
+                  className={`text-sm font-medium py-2 rounded-lg border ${newFromDelivery.type === 'stock' ? 'bg-route text-white border-route' : 'text-depot-700 border-depot-700/15'}`}>
+                  Stock
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input value={newFromDelivery.customer} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, customer: e.target.value })}
+                  className="input" placeholder="Customer" />
+                <InvoiceInput value={newFromDelivery.doNumber} onChange={(v) => setNewFromDelivery({ ...newFromDelivery, doNumber: v })} />
+                {newFromDelivery.type === 'cash' ? (
+                  <input type="number" step="0.01" value={newFromDelivery.cashAmount} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, cashAmount: e.target.value })}
+                    className="input" placeholder="Cash amount (RM)" />
+                ) : (
+                  <input value={newFromDelivery.description} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, description: e.target.value })}
+                    className="input" placeholder="Describe the stock" />
+                )}
+              </div>
+              <button onClick={addFromDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
+                + Add
+              </button>
+            </div>
+          )}
         </DetailSection>
 
-        {/* AMENDMENT 3: Mission — tick completed, add new */}
+        {/* Mission */}
         <DetailSection title="Mission">
           {log.mission_items.length === 0 && <Empty />}
           {log.mission_items.map((item) => (
             <label key={item.id} className="flex items-center gap-2 text-sm py-1.5 border-b border-depot-700/5 last:border-0 cursor-pointer">
-              <input type="checkbox" checked={item.done} onChange={() => toggleMissionDone(item.id, item.done)} />
+              <input type="checkbox" checked={item.done} disabled={locked} onChange={() => toggleMissionDone(item.id, item.done)} />
               <span className={item.done ? 'line-through text-depot-700/50' : ''}>{item.task}</span>
             </label>
           ))}
-          <div className="flex gap-2 mt-3">
-            <input value={newMissionTask} onChange={(e) => setNewMissionTask(e.target.value)}
-              className="input flex-1" placeholder="Add a mission item" />
-            <button onClick={addMission} className="bg-route text-white text-sm font-medium px-3 rounded-lg">Add</button>
-          </div>
+          {!locked && (
+            <div className="flex gap-2 mt-3">
+              <input value={newMissionTask} onChange={(e) => setNewMissionTask(e.target.value)}
+                className="input flex-1" placeholder="Add a mission item" />
+              <button onClick={addMission} className="bg-route text-white text-sm font-medium px-3 rounded-lg">Add</button>
+            </div>
+          )}
         </DetailSection>
 
-        {/* AMENDMENT 4 & 7: Status — resolve existing, add new with description */}
+        {/* Status */}
         <DetailSection title="Status">
           {log.status_errors.length === 0 && <p className="text-sm text-bonus mb-3">No errors flagged.</p>}
           {log.status_errors.map((err) => (
@@ -269,6 +397,7 @@ export default function LogDetailPage() {
               </div>
               <button
                 onClick={() => toggleResolved(err.id, err.resolved)}
+                disabled={locked}
                 className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${
                   err.resolved ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'
                 }`}
@@ -278,44 +407,53 @@ export default function LogDetailPage() {
             </div>
           ))}
 
-          <p className="text-xs text-depot-700/60 mt-4 mb-2">Flag a new error (e.g. found when driver returned):</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <select value={newError.errorType} onChange={(e) => setNewError({ ...newError, errorType: e.target.value })} className="input">
-              <option value="">What error?</option>
-              {ERROR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <select value={newError.department} onChange={(e) => setNewError({ ...newError, department: e.target.value })} className="input">
-              <option value="">Which department's fault?</option>
-              {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-            <div className="flex items-center border border-depot-700/15 rounded-lg overflow-hidden bg-white">
-              <span className="bg-depot-100 px-2.5 py-2 text-sm text-depot-700/70 font-semibold">DO-</span>
-              <input
-                value={newError.invoice}
-                onChange={(e) => setNewError({ ...newError, invoice: e.target.value.replace(/[^0-9]/g, '') })}
-                className="flex-1 px-2 py-2 text-sm focus:outline-none min-w-0"
-                placeholder="06244"
-                inputMode="numeric"
+          {!locked && (
+            <>
+              <p className="text-xs text-depot-700/60 mt-4 mb-2">Flag a new error (e.g. found when driver returned):</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <select value={newError.errorType} onChange={(e) => setNewError({ ...newError, errorType: e.target.value })} className="input">
+                  <option value="">What error?</option>
+                  {ERROR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select value={newError.department} onChange={(e) => setNewError({ ...newError, department: e.target.value })} className="input">
+                  <option value="">Which department's fault?</option>
+                  {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <InvoiceInput value={newError.invoice} onChange={(v) => setNewError({ ...newError, invoice: v })} />
+              </div>
+              <textarea
+                value={newError.description}
+                onChange={(e) => setNewError({ ...newError, description: e.target.value })}
+                className="input mt-2"
+                rows={2}
+                placeholder="Describe the special case (optional)"
               />
-            </div>
-          </div>
-          {/* Amendment 7: description box, written once when the error is flagged */}
-          <textarea
-            value={newError.description}
-            onChange={(e) => setNewError({ ...newError, description: e.target.value })}
-            className="input mt-2"
-            rows={2}
-            placeholder="Describe the special case (optional)"
-          />
-          <button onClick={addError} className="mt-2 text-flag border border-flag/30 hover:bg-flag-light text-sm font-medium px-3 py-1.5 rounded-lg">
-            + Flag this error
-          </button>
-          <p className="text-xs text-depot-700/50 mt-3">
-            Sales/Customer errors still allow the RM50 bonus once resolved. Operation/Logistics errors permanently remove the bonus for this log.
-          </p>
+              <button onClick={addError} className="mt-2 text-flag border border-flag/30 hover:bg-flag-light text-sm font-medium px-3 py-1.5 rounded-lg">
+                + Flag this error
+              </button>
+              <p className="text-xs text-depot-700/50 mt-3">
+                Sales/Customer errors still allow the RM50 bonus once resolved. Operation/Logistics errors permanently remove the bonus for this log.
+              </p>
+            </>
+          )}
         </DetailSection>
 
-        {/* Admin-only delete */}
+        {/* Amendment 1: COMPLETE lock — staff can tick, only admin can un-tick */}
+        <section className={`rounded-xl p-4 border ${locked ? 'bg-bonus-light border-bonus/30' : 'bg-depot-100 border-depot-700/10'}`}>
+          {isAdmin || !locked ? (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={locked} onChange={toggleCompleted} />
+              <span className={`text-sm font-medium ${locked ? 'text-bonus' : 'text-depot-700'}`}>
+                {locked ? 'Marked COMPLETE — no further changes allowed. Un-tick to reopen.' : 'Mark this dispatch log as COMPLETE'}
+              </span>
+            </label>
+          ) : (
+            <p className="text-sm font-medium text-bonus">
+              This log is marked COMPLETE. Only an admin can reopen it.
+            </p>
+          )}
+        </section>
+
         {isAdmin && (
           <button
             onClick={deleteLog}
@@ -345,7 +483,6 @@ export default function LogDetailPage() {
   );
 }
 
-// Amendment 6: same "DO-" prefixed invoice input pattern as the New Dispatch Log form
 function InvoiceInput({ value, onChange }) {
   return (
     <div className="flex items-center border border-depot-700/15 rounded-lg overflow-hidden bg-white">

@@ -14,6 +14,7 @@ export default function NewLogPage() {
   const [foreman1, setForeman1] = useState('');
   const [foreman2, setForeman2] = useState('');
   const [loaderName, setLoaderName] = useState(''); // Amendment 5: free text, optional
+  const [plateNumber, setPlateNumber] = useState(''); // Amendment 3: free text, optional
   const [logDate, setLogDate] = useState(new Date().toISOString().slice(0, 10));
   // Amendment 1: no manual amount field anymore — it's calculated below from To Delivery rows
 
@@ -37,7 +38,8 @@ export default function NewLogPage() {
   const [toDelivery, setToDelivery] = useState([{ invoice: '', customer: '', amount: '' }]);
 
   // --- Part 3: From Delivery ---
-  const [fromDelivery, setFromDelivery] = useState([{ description: '' }]);
+  // Amendment 6: each row is either "cash" (customer, DO#, amount) or "stock" (customer, DO#, description)
+  const [fromDelivery, setFromDelivery] = useState([]);
 
   // --- Part 4: Mission ---
   const [missions, setMissions] = useState([{ task: '', done: false }]);
@@ -79,6 +81,7 @@ export default function NewLogPage() {
           foreman_1: foreman1,
           foreman_2: foreman2,
           loader_name: loaderName, // Amendment 5
+          plate_number: plateNumber, // Amendment 3
           header_amount: toDeliveryTotal, // now auto-calculated, same as the To Delivery total
           log_date: logDate,
           logged_by: session?.user?.id,
@@ -104,10 +107,20 @@ export default function NewLogPage() {
         );
       }
 
-      const validFromDelivery = fromDelivery.filter((r) => r.description);
+      const validFromDelivery = fromDelivery.filter((r) =>
+        r.type === 'cash' ? (r.customer && r.doNumber && r.cashAmount) : (r.customer && r.doNumber && r.description)
+      );
       if (validFromDelivery.length) {
         await supabase.from('from_delivery_items').insert(
-          validFromDelivery.map((r) => ({ dispatch_log_id: logId, description: r.description }))
+          validFromDelivery.map((r) => ({
+            dispatch_log_id: logId,
+            type: r.type,
+            customer: r.customer,
+            do_number: r.doNumber ? `DO-${r.doNumber}` : null,
+            cash_amount: r.type === 'cash' ? parseFloat(r.cashAmount) : null,
+            description: r.type === 'stock' ? r.description : null,
+            collected: false,
+          }))
         );
       }
 
@@ -174,6 +187,10 @@ export default function NewLogPage() {
               <input value={loaderName} onChange={(e) => setLoaderName(e.target.value)}
                 className="input" placeholder="Loader name" />
             </Field>
+            <Field label="Plate Number (optional)">
+              <input value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)}
+                className="input" placeholder="e.g. ABC1234" />
+            </Field>
             <Field label="Total Amount (RM) — auto">
               <div className="input bg-depot-100 text-depot-700 font-semibold">
                 {toDeliveryTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -207,14 +224,38 @@ export default function NewLogPage() {
         {/* PART 3: FROM DELIVERY */}
         <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
           <h2 className="font-display font-semibold text-depot-900 mb-4">From Delivery</h2>
-          <p className="text-xs text-depot-700/60 mb-3">What was brought back from deliveries.</p>
+          <p className="text-xs text-depot-700/60 mb-3">What was brought back from deliveries — cash collected, or stock returned.</p>
           {fromDelivery.map((row, i) => (
-            <RowGroup key={i} onRemove={fromDelivery.length > 1 ? () => removeRow(setFromDelivery)(i) : null}>
-              <input value={row.description} onChange={(e) => updateRow(setFromDelivery)(i, 'description', e.target.value)}
-                className="input flex-1" placeholder="e.g. 2x unsold cartons, empty pallets" />
-            </RowGroup>
+            <div key={i} className="mb-3 pb-3 border-b border-depot-700/5 last:border-0">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex-1 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => updateRow(setFromDelivery)(i, 'type', 'cash')}
+                    className={`text-sm font-medium py-2 rounded-lg border ${row.type === 'cash' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
+                    Cash
+                  </button>
+                  <button type="button" onClick={() => updateRow(setFromDelivery)(i, 'type', 'stock')}
+                    className={`text-sm font-medium py-2 rounded-lg border ${row.type === 'stock' ? 'bg-route text-white border-route' : 'text-depot-700 border-depot-700/15'}`}>
+                    Stock
+                  </button>
+                </div>
+                <button type="button" onClick={() => removeRow(setFromDelivery)(i)} className="text-depot-700/40 hover:text-flag text-lg px-1">×</button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input value={row.customer || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'customer', e.target.value)}
+                  className="input" placeholder="Customer" />
+                <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
+                {row.type === 'cash' ? (
+                  <input type="number" step="0.01" value={row.cashAmount || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'cashAmount', e.target.value)}
+                    className="input" placeholder="Cash amount (RM)" />
+                ) : (
+                  <input value={row.description || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'description', e.target.value)}
+                    className="input" placeholder="Describe the stock" />
+                )}
+              </div>
+            </div>
           ))}
-          <AddButton onClick={() => addRow(setFromDelivery)({ description: '' })} label="Add item" />
+          <AddButton onClick={() => addRow(setFromDelivery)({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' })} label="Add item" />
         </section>
 
         {/* PART 4: MISSION */}

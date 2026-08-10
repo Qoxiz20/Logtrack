@@ -6,9 +6,10 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import NavDrawer from '@/components/NavDrawer';
 
+// Amendment 5: LogTrack home is now a list of month folders instead of a flat log list.
 export default function Dashboard() {
   const router = useRouter();
-  const [logs, setLogs] = useState([]);
+  const [months, setMonths] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -19,16 +20,25 @@ export default function Dashboard() {
         return;
       }
 
-      // Pull logs plus a count of unresolved errors for each, in one go
       const { data, error } = await supabase
         .from('dispatch_logs')
-        .select(`
-          id, driver_name, header_amount, log_date, to_delivery_total, reward_earned,
-          status_errors ( id, resolved )
-        `)
+        .select('id, log_date, completed')
         .order('log_date', { ascending: false });
 
-      if (!error) setLogs(data);
+      if (!error && data) {
+        // Group logs by "YYYY-MM" on the client — simplest approach without a database view
+        const grouped = {};
+        data.forEach((log) => {
+          const key = log.log_date.slice(0, 7); // "YYYY-MM"
+          if (!grouped[key]) grouped[key] = { total: 0, completed: 0 };
+          grouped[key].total += 1;
+          if (log.completed) grouped[key].completed += 1;
+        });
+        const monthList = Object.entries(grouped)
+          .map(([key, counts]) => ({ key, ...counts }))
+          .sort((a, b) => (a.key < b.key ? 1 : -1)); // newest month first
+        setMonths(monthList);
+      }
       setLoading(false);
     }
     load();
@@ -53,53 +63,37 @@ export default function Dashboard() {
           >
             + New Dispatch Log
           </Link>
-          <button
-            onClick={handleLogout}
-            className="text-depot-100/70 text-sm px-3 py-2 hover:text-paper"
-          >
+          <button onClick={handleLogout} className="text-depot-100/70 text-sm px-3 py-2 hover:text-paper">
             Log out
           </button>
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-8">
-        <h2 className="font-display text-2xl text-depot-900 mb-4">Dispatch Logs</h2>
+      <main className="max-w-2xl mx-auto px-4 py-8">
+        <h2 className="font-display text-2xl text-depot-900 mb-4">Dispatch Logs by Month</h2>
 
         {loading && <p className="text-depot-700">Loading…</p>}
-        {!loading && logs.length === 0 && (
+        {!loading && months.length === 0 && (
           <p className="text-depot-700">No logs yet. Create your first one.</p>
         )}
 
         <div className="space-y-3">
-          {logs.map((log) => {
-            const activeErrors = log.status_errors?.filter((e) => !e.resolved).length || 0;
+          {months.map((m) => {
+            const label = new Date(`${m.key}-01T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+            const allDone = m.completed === m.total;
             return (
               <Link
-                key={log.id}
-                href={`/log/${log.id}`}
-                className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 flex items-center justify-between hover:border-route/40 hover:shadow-md transition cursor-pointer"
+                key={m.key}
+                href={`/dashboard/${m.key}`}
+                className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 flex items-center justify-between hover:border-route/40 hover:shadow-md transition"
               >
                 <div>
-                  <p className="font-semibold text-depot-900">{log.driver_name}</p>
-                  <p className="text-sm text-depot-700/70">
-                    {new Date(log.log_date).toLocaleDateString()} · RM {Number(log.header_amount).toLocaleString()}
-                  </p>
-                  <p className="text-xs text-depot-700/60 mt-0.5">
-                    To Delivery total: RM {Number(log.to_delivery_total).toLocaleString()}
-                  </p>
+                  <p className="font-display font-semibold text-depot-900">{label}</p>
+                  <p className="text-xs text-depot-700/60 mt-0.5">{m.total} dispatch log{m.total === 1 ? '' : 's'}</p>
                 </div>
-                <div className="flex flex-col items-end gap-1.5">
-                  {log.reward_earned && (
-                    <span className="bg-bonus-light text-bonus text-xs font-semibold px-2.5 py-1 rounded-full">
-                      RM50 Bonus
-                    </span>
-                  )}
-                  {activeErrors > 0 && (
-                    <span className="bg-flag-light text-flag text-xs font-semibold px-2.5 py-1 rounded-full">
-                      {activeErrors} active error{activeErrors > 1 ? 's' : ''}
-                    </span>
-                  )}
-                </div>
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${allDone ? 'bg-bonus-light text-bonus' : 'bg-depot-100 text-depot-700/70'}`}>
+                  {allDone ? 'Completed' : `${m.completed}/${m.total} completed`}
+                </span>
               </Link>
             );
           })}
