@@ -37,7 +37,8 @@ export default function MonthPage() {
       .select(`
         id, driver_name, log_date, to_delivery_total, completed,
         from_delivery_items ( type, cash_amount, customer, collected ),
-        status_errors ( resolved )
+        status_errors ( invoice_number, error_type, department, resolved ),
+        undelivered_items ( invoice_number, customer, amount, resolved )
       `)
       .gte('log_date', start)
       .lte('log_date', end)
@@ -66,6 +67,7 @@ export default function MonthPage() {
         {logs.map((log) => {
           const cashEntries = (log.from_delivery_items || []).filter((f) => f.type === 'cash');
           const errors = log.status_errors || [];
+          const undeliveredEntries = log.undelivered_items || [];
           const dateLabel = new Date(log.log_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
           return (
@@ -97,15 +99,27 @@ export default function MonthPage() {
                 </div>
               )}
 
-              <p className="text-xs mt-1.5">
-                {errors.length === 0 ? (
-                  <span className="text-bonus font-medium">Status: All good</span>
-                ) : (
-                  <span className="text-depot-700/70">
-                    Status: {errors.length} error{errors.length > 1 ? 's' : ''}, {errors.filter((e) => e.resolved).length} resolved
-                  </span>
-                )}
-              </p>
+              {undeliveredEntries.length > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {undeliveredEntries.map((u, i) => (
+                    <p key={i} className="text-xs text-depot-700/70">
+                      Undelivered: {u.invoice_number} — {u.customer} — RM {Number(u.amount).toLocaleString()} — {u.resolved ? 'Resolved' : 'Pending'}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {errors.length === 0 ? (
+                <p className="text-xs mt-1.5 text-bonus font-medium">Status: All good</p>
+              ) : (
+                <div className="mt-1.5 space-y-0.5">
+                  {errors.map((e, i) => (
+                    <p key={i} className="text-xs text-depot-700/70">
+                      {e.invoice_number} — {e.error_type} ({e.department}) — {e.resolved ? 'Resolved' : 'Active'}
+                    </p>
+                  ))}
+                </div>
+              )}
             </Link>
           );
         })}

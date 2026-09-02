@@ -27,6 +27,7 @@ export default function LogDetailPage() {
   const [newMissionTask, setNewMissionTask] = useState('');
   const [newError, setNewError] = useState({ errorType: '', department: '', invoice: '', description: '' });
   const [newToDelivery, setNewToDelivery] = useState({ invoice: '', customer: '', amount: '' });
+  const [newUndelivered, setNewUndelivered] = useState({ invoice: '', customer: '', amount: '' });
 
   useEffect(() => {
     load();
@@ -58,7 +59,8 @@ export default function LogDetailPage() {
         to_delivery_items ( id, invoice_number, customer, amount, returned ),
         from_delivery_items ( id, type, customer, do_number, cash_amount, description, collected ),
         mission_items ( id, task, done ),
-        status_errors ( id, invoice_number, error_type, department, description, resolved )
+        status_errors ( id, invoice_number, error_type, department, description, resolved ),
+        undelivered_items ( id, invoice_number, customer, amount, resolved )
       `)
       .eq('id', id)
       .single();
@@ -99,12 +101,50 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- Amendment 1: admin-only COMPLETE toggle ---
+  // --- COMPLETE toggle: staff can tick, only admin can un-tick, and NOBODY can tick
+  // while anything is unresolved (unresolved errors, uncollected cash, undelivered DOs).
+  // This check mirrors a database trigger that enforces the same rule with no bypass —
+  // this client-side version just gives a friendlier message before that trigger fires.
   async function toggleCompleted() {
     const turningOn = !log.completed;
     if (!turningOn && !isAdmin) return; // staff can tick, but never untick
-    if (turningOn && !confirm('Mark this dispatch log as COMPLETE? No more changes can be made to it until an admin un-ticks it.')) return;
-    await supabase.from('dispatch_logs').update({ completed: !log.completed }).eq('id', id);
+
+    if (turningOn) {
+      const unresolvedErrors = log.status_errors.filter((e) => !e.resolved).length;
+      const uncollectedCash = log.from_delivery_items.filter((f) => f.type === 'cash' && !f.collected).length;
+      const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved).length;
+
+      if (unresolvedErrors > 0 || uncollectedCash > 0 || unresolvedUndelivered > 0) {
+        const parts = [];
+        if (unresolvedErrors > 0) parts.push(`${unresolvedErrors} unresolved error(s)`);
+        if (uncollectedCash > 0) parts.push(`${uncollectedCash} uncollected cash entry(ies)`);
+        if (unresolvedUndelivered > 0) parts.push(`${unresolvedUndelivered} undelivered DO(s)`);
+        alert(`Cannot mark COMPLETE yet — please resolve first: ${parts.join(', ')}.`);
+        return;
+      }
+      if (!confirm('Mark this dispatch log as COMPLETE? No more changes can be made to it until an admin un-ticks it.')) return;
+    }
+
+    const { error } = await supabase.from('dispatch_logs').update({ completed: !log.completed }).eq('id', id);
+    if (error) alert(error.message); // catches the database trigger too, if this check somehow got out of sync
+    load();
+  }
+
+  // --- Amendment: Undelivered DO — same fields as To Delivery, add-only, resolvable ---
+  async function addUndelivered() {
+    if (!newUndelivered.invoice || !newUndelivered.customer || !newUndelivered.amount) return;
+    await supabase.from('undelivered_items').insert({
+      dispatch_log_id: id,
+      invoice_number: `DO-${newUndelivered.invoice}`,
+      customer: newUndelivered.customer,
+      amount: parseFloat(newUndelivered.amount),
+      resolved: false,
+    });
+    setNewUndelivered({ invoice: '', customer: '', amount: '' });
+    load();
+  }
+  async function toggleUndeliveredResolved(itemId, current) {
+    await supabase.from('undelivered_items').update({ resolved: !current }).eq('id', itemId);
     load();
   }
 
@@ -298,6 +338,44 @@ export default function LogDetailPage() {
               </div>
               <button onClick={addToDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
                 + Add DO
+              </button>
+            </>
+          )}
+        </DetailSection>
+
+        {/* Amendment: Undelivered DO — DOs assigned to this driver that never got attempted */}
+        <DetailSection title="Undelivered DO">
+          <p className="text-xs text-depot-700/60 mb-3">DOs assigned to this driver that never even got delivered.</p>
+          {log.undelivered_items.length === 0 && <Empty />}
+          {log.undelivered_items.map((item) => (
+            <div key={item.id} className="flex items-center justify-between py-1.5 border-b border-depot-700/5 last:border-0">
+              <div className="text-sm">
+                <p className="font-medium text-depot-900">{item.invoice_number} — {item.customer}</p>
+                <p className="text-xs text-depot-700/60">RM {Number(item.amount).toLocaleString()}</p>
+              </div>
+              <button
+                onClick={() => toggleUndeliveredResolved(item.id, item.resolved)}
+                disabled={locked}
+                className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${
+                  item.resolved ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'
+                }`}
+              >
+                {item.resolved ? 'Resolved' : 'Pending — mark resolved'}
+              </button>
+            </div>
+          ))}
+          {!locked && (
+            <>
+              <p className="text-xs text-depot-700/60 mt-4 mb-2">Add an undelivered DO:</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <InvoiceInput value={newUndelivered.invoice} onChange={(v) => setNewUndelivered({ ...newUndelivered, invoice: v })} />
+                <input value={newUndelivered.customer} onChange={(e) => setNewUndelivered({ ...newUndelivered, customer: e.target.value })}
+                  className="input" placeholder="Customer" />
+                <input type="number" step="0.01" value={newUndelivered.amount} onChange={(e) => setNewUndelivered({ ...newUndelivered, amount: e.target.value })}
+                  className="input" placeholder="Amount (RM)" />
+              </div>
+              <button onClick={addUndelivered} className="mt-2 text-flag border border-flag/30 hover:bg-flag-light text-sm font-medium px-3 py-1.5 rounded-lg">
+                + Add Undelivered DO
               </button>
             </>
           )}
