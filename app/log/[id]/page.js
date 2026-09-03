@@ -237,7 +237,7 @@ export default function LogDetailPage() {
     if (!newError.errorType || !newError.department) return;
     await supabase.from('status_errors').insert({
       dispatch_log_id: id,
-      invoice_number: newError.invoice ? `DO-${newError.invoice}` : '',
+      invoice_number: newError.invoice || '',
       error_type: newError.errorType,
       department: newError.department,
       description: newError.description || null,
@@ -525,7 +525,12 @@ export default function LogDetailPage() {
                   <option value="">Which department's fault?</option>
                   {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <InvoiceInput value={newError.invoice} onChange={(v) => setNewError({ ...newError, invoice: v })} />
+                <select value={newError.invoice} onChange={(e) => setNewError({ ...newError, invoice: e.target.value })} className="input">
+                  <option value="">Which DO?</option>
+                  {log.to_delivery_items.map((item) => (
+                    <option key={item.id} value={item.invoice_number}>{item.invoice_number}</option>
+                  ))}
+                </select>
               </div>
               <textarea
                 value={newError.description}

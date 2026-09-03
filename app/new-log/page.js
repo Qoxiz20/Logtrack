@@ -116,6 +116,21 @@ export default function NewLogPage() {
       return;
     }
 
+    const incompleteUnresolved = toDelivery.some(
+      (r) => r.mode === 'unresolved' && (!r.resolvesUndeliveredId && !r.resolvesErrorId)
+    );
+    if (incompleteUnresolved) {
+      setSubmitError('One of your To Delivery rows is set to "Unresolved DO" but nothing was selected from the dropdown. Please pick an item, or switch that row back to "New".');
+      return;
+    }
+    const missingDetails = toDelivery.some(
+      (r) => r.mode === 'unresolved' && (r.resolvesUndeliveredId || r.resolvesErrorId) && (!r.customer || !r.amount)
+    );
+    if (missingDetails) {
+      setSubmitError('One of your "Unresolved DO" rows is missing Customer or Amount — please fill those in before saving.');
+      return;
+    }
+
     setSaving(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -143,7 +158,7 @@ export default function NewLogPage() {
 
       const validToDelivery = toDelivery.filter((r) => r.invoice && r.customer && r.amount);
       if (validToDelivery.length) {
-        await supabase.from('to_delivery_items').insert(
+        const { error: tdErr } = await supabase.from('to_delivery_items').insert(
           validToDelivery.map((r) => ({
             dispatch_log_id: logId,
             invoice_number: `DO-${r.invoice}`, // amendment 3
@@ -153,13 +168,14 @@ export default function NewLogPage() {
             resolves_error_id: r.mode === 'unresolved' ? r.resolvesErrorId : null,
           }))
         );
+        if (tdErr) throw new Error('To Delivery: ' + tdErr.message);
       }
 
       const validFromDelivery = fromDelivery.filter((r) =>
         r.type === 'cash' ? (r.customer && r.doNumber && r.cashAmount) : (r.customer && r.doNumber && r.description)
       );
       if (validFromDelivery.length) {
-        await supabase.from('from_delivery_items').insert(
+        const { error: fdErr } = await supabase.from('from_delivery_items').insert(
           validFromDelivery.map((r) => ({
             dispatch_log_id: logId,
             type: r.type,
@@ -170,31 +186,34 @@ export default function NewLogPage() {
             collected: false,
           }))
         );
+        if (fdErr) throw new Error('From Delivery: ' + fdErr.message);
       }
 
       const validMissions = missions.filter((r) => r.task);
       if (validMissions.length) {
-        await supabase.from('mission_items').insert(
+        const { error: missErr } = await supabase.from('mission_items').insert(
           validMissions.map((r) => ({ dispatch_log_id: logId, task: r.task, done: r.done }))
         );
+        if (missErr) throw new Error('Mission: ' + missErr.message);
       }
 
       if (errors.length) {
-        await supabase.from('status_errors').insert(
+        const { error: errErr } = await supabase.from('status_errors').insert(
           errors.map((r) => ({
             dispatch_log_id: logId,
-            invoice_number: r.invoice ? `DO-${r.invoice}` : '',
+            invoice_number: r.invoice || '',
             error_type: r.errorType,
             department: r.department,
             description: r.description || null, // Amendment 7
             resolved: false,
           }))
         );
+        if (errErr) throw new Error('Status: ' + errErr.message);
       }
 
       const validUndelivered = undelivered.filter((r) => r.invoice && r.customer && r.amount);
       if (validUndelivered.length) {
-        await supabase.from('undelivered_items').insert(
+        const { error: undelErr } = await supabase.from('undelivered_items').insert(
           validUndelivered.map((r) => ({
             dispatch_log_id: logId,
             invoice_number: `DO-${r.invoice}`,
@@ -203,6 +222,7 @@ export default function NewLogPage() {
             resolved: false,
           }))
         );
+        if (undelErr) throw new Error('Undelivered DO: ' + undelErr.message);
       }
 
       router.push('/dashboard');
@@ -210,6 +230,42 @@ export default function NewLogPage() {
       setSubmitError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Amendment: typing a DO number in "New" mode auto-switches to "Unresolved DO" and links
+  // it, if that exact number matches an outstanding error or undelivered item. Removes the
+  // need to remember the toggle exists at all — only an EXACT match ever triggers this,
+  // so partial typing never fires it early.
+  async function handleNewInvoiceChange(i, digits) {
+    updateRow(setToDelivery)(i, 'invoice', digits);
+    const full = `DO-${digits}`;
+
+    const matchedUndelivered = outstandingUndelivered.find((u) => u.invoice_number === full);
+    if (matchedUndelivered) {
+      updateRow(setToDelivery)(i, 'mode', 'unresolved');
+      updateRow(setToDelivery)(i, 'customer', matchedUndelivered.customer);
+      updateRow(setToDelivery)(i, 'amount', String(matchedUndelivered.amount));
+      updateRow(setToDelivery)(i, 'resolvesUndeliveredId', matchedUndelivered.id);
+      updateRow(setToDelivery)(i, 'resolvesErrorId', null);
+      return;
+    }
+
+    const matchedError = outstandingErrors.find((er) => er.invoice_number === full);
+    if (matchedError) {
+      updateRow(setToDelivery)(i, 'mode', 'unresolved');
+      updateRow(setToDelivery)(i, 'resolvesErrorId', matchedError.id);
+      updateRow(setToDelivery)(i, 'resolvesUndeliveredId', null);
+      // Amendment 2: this DO's amount already counted once on its original day — force RM0
+      // so re-delivering it can't inflate today's total a second time.
+      updateRow(setToDelivery)(i, 'amount', '0');
+      const { data: match } = await supabase
+        .from('to_delivery_items')
+        .select('customer')
+        .eq('dispatch_log_id', matchedError.dispatch_log_id)
+        .eq('invoice_number', matchedError.invoice_number)
+        .maybeSingle();
+      updateRow(setToDelivery)(i, 'customer', match?.customer || '');
     }
   }
 
@@ -337,7 +393,7 @@ export default function NewLogPage() {
 
               {row.mode === 'new' ? (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setToDelivery)(i, 'invoice', v)} />
+                  <InvoiceInput value={row.invoice} onChange={(v) => handleNewInvoiceChange(i, v)} />
                   <input value={row.customer} onChange={(e) => updateRow(setToDelivery)(i, 'customer', e.target.value)}
                     className="input" placeholder="Customer" />
                   <input type="number" step="0.01" value={row.amount} onChange={(e) => updateRow(setToDelivery)(i, 'amount', e.target.value)}
@@ -371,16 +427,18 @@ export default function NewLogPage() {
                           updateRow(setToDelivery)(i, 'invoice', picked.invoice_number.replace(/^DO-/, ''));
                           updateRow(setToDelivery)(i, 'resolvesErrorId', picked.id);
                           updateRow(setToDelivery)(i, 'resolvesUndeliveredId', null);
-                          // Errors don't store Customer/Amount themselves — look up the
-                          // matching invoice on that original tracker to auto-fill them.
+                          // Amendment 2: this DO's amount already counted once on its original
+                          // day — force RM0 so re-delivering it can't inflate today's total again.
+                          updateRow(setToDelivery)(i, 'amount', '0');
+                          // Errors don't store Customer themselves — look up the matching
+                          // invoice on that original tracker to auto-fill it.
                           const { data: match } = await supabase
                             .from('to_delivery_items')
-                            .select('customer, amount')
+                            .select('customer')
                             .eq('dispatch_log_id', picked.dispatch_log_id)
                             .eq('invoice_number', picked.invoice_number)
                             .maybeSingle();
                           updateRow(setToDelivery)(i, 'customer', match?.customer || '');
-                          updateRow(setToDelivery)(i, 'amount', match ? String(match.amount) : '');
                         }
                       }}
                       className="input"
@@ -399,8 +457,36 @@ export default function NewLogPage() {
                     </select>
                   )}
                   {(row.resolvesUndeliveredId || row.resolvesErrorId) && (
-                    <p className="text-xs text-depot-700/60 mt-1.5">
-                      Re-delivering: DO-{row.invoice} — {row.customer || '(fill in customer)'} — RM {row.amount ? Number(row.amount).toLocaleString() : '(fill in amount)'}. Mark this tracker COMPLETE to resolve it.
+                    <div className="mt-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <input value={row.customer} onChange={(e) => updateRow(setToDelivery)(i, 'customer', e.target.value)}
+                          className="input" placeholder="Customer" />
+                        {row.resolvesErrorId ? (
+                          <div className="input bg-depot-100 text-depot-700/60 flex items-center">RM 0 (doesn't count toward bonus)</div>
+                        ) : (
+                          <input type="number" step="0.01" value={row.amount} onChange={(e) => updateRow(setToDelivery)(i, 'amount', e.target.value)}
+                            className="input" placeholder="Amount (RM)" />
+                        )}
+                      </div>
+                      {!row.customer && (
+                        <p className="text-xs text-flag mt-1">
+                          Couldn't auto-fill Customer for this one — please type it in above.
+                        </p>
+                      )}
+                      {row.resolvesUndeliveredId && !row.amount && (
+                        <p className="text-xs text-flag mt-1">
+                          Couldn't auto-fill Amount for this one — please type it in above.
+                        </p>
+                      )}
+                      <p className="text-xs text-depot-700/60 mt-1">
+                        Re-delivering: DO-{row.invoice}. Mark this tracker COMPLETE to resolve it.
+                        {row.resolvesErrorId && " This DO's amount already counted once on its original day, so it's set to RM0 here to prevent counting it twice toward the bonus."}
+                      </p>
+                    </div>
+                  )}
+                  {!row.resolvesUndeliveredId && !row.resolvesErrorId && outstandingUndelivered.length + outstandingErrors.length > 0 && (
+                    <p className="text-xs text-flag mt-1.5">
+                      Nothing selected yet — this row won't be saved until you pick one above.
                     </p>
                   )}
                 </div>
@@ -497,7 +583,12 @@ export default function NewLogPage() {
                   <option value="">Which department's fault?</option>
                   {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setErrors)(i, 'invoice', v)} />
+                <select value={row.invoice} onChange={(e) => updateRow(setErrors)(i, 'invoice', e.target.value)} className="input">
+                  <option value="">Which DO?</option>
+                  {[...new Set(toDelivery.filter((r) => r.invoice).map((r) => `DO-${r.invoice}`))].map((inv) => (
+                    <option key={inv} value={inv}>{inv}</option>
+                  ))}
+                </select>
               </RowGroup>
               {/* Amendment 7: description box for special cases */}
               <textarea

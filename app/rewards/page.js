@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import NavDrawer from '@/components/NavDrawer';
 
@@ -82,6 +83,21 @@ export default function RewardsPage() {
             <p className="text-xs text-depot-700/60 mt-0.5">{breakdown.length} bonus-earning log{breakdown.length === 1 ? '' : 's'} this month</p>
           </div>
           <input type="month" value={yearMonth} onChange={(e) => setYearMonth(e.target.value)} className="input w-auto" />
+        </section>
+
+        <section className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <Link href="/rewards/delivery-accuracy" className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 hover:border-route/40 hover:shadow-md transition text-center">
+            <p className="text-sm font-semibold text-depot-900">Delivery Accuracy</p>
+            <p className="text-xs text-depot-700/60 mt-1">Logistics errors by team</p>
+          </Link>
+          <Link href="/rewards/outbound-accuracy" className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 hover:border-route/40 hover:shadow-md transition text-center">
+            <p className="text-sm font-semibold text-depot-900">Outbound Accuracy</p>
+            <p className="text-xs text-depot-700/60 mt-1">Operation errors by loader</p>
+          </Link>
+          <Link href="/rewards/orange-deliveries" className="bg-white rounded-xl p-4 shadow-sm border border-depot-700/10 hover:border-route/40 hover:shadow-md transition text-center">
+            <p className="text-sm font-semibold text-depot-900">Orange Deliveries</p>
+            <p className="text-xs text-depot-700/60 mt-1">Undelivered DOs by team</p>
+          </Link>
         </section>
 
         {loading ? (
