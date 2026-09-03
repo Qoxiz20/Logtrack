@@ -35,7 +35,8 @@ export default function NewLogPage() {
 
   // --- Part 2: To Delivery ---
   // Amendment 3: "invoice" here stores ONLY the digits the user types; "DO-" is added automatically
-  const [toDelivery, setToDelivery] = useState([{ invoice: '', customer: '', amount: '' }]);
+  // Amendment: "mode" is 'new' (typed fresh) or 'unresolved' (picked from an outstanding Undelivered DO)
+  const [toDelivery, setToDelivery] = useState([{ mode: 'new', invoice: '', customer: '', amount: '', resolvesUndeliveredId: null, resolvesErrorId: null }]);
 
   // --- Part 3: From Delivery ---
   // Amendment 6: each row is either "cash" (customer, DO#, amount) or "stock" (customer, DO#, description)
@@ -50,48 +51,46 @@ export default function NewLogPage() {
   // --- Amendment: Undelivered DO — DOs assigned to this driver that never got attempted ---
   const [undelivered, setUndelivered] = useState([]);
 
-  // --- Amendment: Outstanding from Previous Days panel ---
+  // --- Amendment: Outstanding from Previous Days — now a view-only side drawer,
+  // opened via a badge button instead of sitting at the top of the page.
   const [outstandingErrors, setOutstandingErrors] = useState([]);
   const [outstandingUndelivered, setOutstandingUndelivered] = useState([]);
   const [outstandingLoading, setOutstandingLoading] = useState(true);
+  const [outstandingOpen, setOutstandingOpen] = useState(false);
 
   useEffect(() => {
     loadOutstanding();
   }, []);
 
+  // DD-MM-YYYY, since that's the format requested for the Outstanding list
+  function formatDMY(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${dd}-${mm}-${d.getFullYear()}`;
+  }
+
   async function loadOutstanding() {
     setOutstandingLoading(true);
+    // DO-0 is a reusable placeholder code — it never counts as an outstanding issue.
     const { data: errs } = await supabase
       .from('status_errors')
       .select('id, invoice_number, error_type, department, description, dispatch_log_id, dispatch_logs ( driver_name, log_date )')
       .eq('resolved', false)
-      .order('dispatch_log_id');
+      .neq('invoice_number', 'DO-0');
     const { data: undel } = await supabase
       .from('undelivered_items')
       .select('id, invoice_number, customer, amount, dispatch_log_id, dispatch_logs ( driver_name, log_date )')
       .eq('resolved', false)
-      .order('dispatch_log_id');
-    setOutstandingErrors(errs || []);
-    setOutstandingUndelivered(undel || []);
-    setOutstandingLoading(false);
-  }
+      .neq('invoice_number', 'DO-0');
 
-  // Resolving here updates the SAME row on the original tracker — no duplication,
-  // so the original tracker reflects it immediately too.
-  async function resolveOutstandingError(errorId, dispatchLogId) {
-    await supabase.from('status_errors').update({ resolved: true }).eq('id', errorId);
-    const { data: freshLog } = await supabase
-      .from('dispatch_logs')
-      .select('to_delivery_total, status_errors ( department, resolved )')
-      .eq('id', dispatchLogId)
-      .single();
-    const qualifies = computeRewardEarned(freshLog.to_delivery_total, freshLog.status_errors);
-    await supabase.from('dispatch_logs').update({ reward_earned: qualifies }).eq('id', dispatchLogId);
-    loadOutstanding();
-  }
-  async function resolveOutstandingUndelivered(itemId) {
-    await supabase.from('undelivered_items').update({ resolved: true }).eq('id', itemId);
-    loadOutstanding();
+    // Sort oldest-first by the tracker's actual date — the Supabase query above can't
+    // order by a joined table's column, so it's sorted here once the data is back.
+    const byDate = (a, b) => new Date(a.dispatch_logs?.log_date || 0) - new Date(b.dispatch_logs?.log_date || 0);
+    setOutstandingErrors((errs || []).sort(byDate));
+    setOutstandingUndelivered((undel || []).sort(byDate));
+    setOutstandingLoading(false);
   }
 
   const [saving, setSaving] = useState(false);
@@ -150,6 +149,8 @@ export default function NewLogPage() {
             invoice_number: `DO-${r.invoice}`, // amendment 3
             customer: r.customer,
             amount: parseFloat(r.amount),
+            resolves_undelivered_id: r.mode === 'unresolved' ? r.resolvesUndeliveredId : null,
+            resolves_error_id: r.mode === 'unresolved' ? r.resolvesErrorId : null,
           }))
         );
       }
@@ -164,7 +165,7 @@ export default function NewLogPage() {
             type: r.type,
             customer: r.customer,
             do_number: r.doNumber ? `DO-${r.doNumber}` : null,
-            cash_amount: r.type === 'cash' ? parseFloat(r.cashAmount) : null,
+            cash_amount: r.type === 'cash' ? r.cashAmount : null,
             description: r.type === 'stock' ? r.description : null,
             collected: false,
           }))
@@ -214,52 +215,57 @@ export default function NewLogPage() {
 
   return (
     <div className="min-h-screen bg-paper pb-24">
-      <header className="bg-depot-900 px-6 py-4 flex items-center gap-3">
-        <NavDrawer />
-        <h1 className="font-display text-xl text-paper font-bold">New Dispatch Log</h1>
+      <header className="bg-depot-900 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <NavDrawer />
+          <h1 className="font-display text-xl text-paper font-bold">New Dispatch Log</h1>
+        </div>
+        {!outstandingLoading && (outstandingErrors.length + outstandingUndelivered.length > 0) && (
+          <button
+            onClick={() => setOutstandingOpen(true)}
+            className="bg-flag text-white text-xs font-semibold px-3 py-1.5 rounded-full whitespace-nowrap"
+          >
+            ⚠ Outstanding ({outstandingErrors.length + outstandingUndelivered.length})
+          </button>
+        )}
       </header>
 
-      <div className="max-w-2xl mx-auto px-4 pt-6">
-        {!outstandingLoading && (outstandingErrors.length > 0 || outstandingUndelivered.length > 0) && (
-          <section className="bg-flag-light border border-flag/30 rounded-xl p-4 mb-6">
-            <h2 className="font-display font-semibold text-flag mb-3">
-              Outstanding from Previous Days ({outstandingErrors.length + outstandingUndelivered.length})
-            </h2>
+      {/* Amendment: Outstanding from Previous Days — now a view-only slide-in panel from the side.
+          No resolve buttons here anymore; an Undelivered DO can only be resolved by actually
+          re-delivering it (see the "Unresolved DO" option in the To Delivery section below). */}
+      {outstandingOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="flex-1 bg-black/40" onClick={() => setOutstandingOpen(false)} />
+          <div className="w-80 max-w-[85%] bg-white h-full p-5 overflow-y-auto shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display font-semibold text-depot-900">Outstanding from Previous Days</h2>
+              <button onClick={() => setOutstandingOpen(false)} className="text-depot-700/50 text-2xl leading-none">×</button>
+            </div>
+            {outstandingErrors.length === 0 && outstandingUndelivered.length === 0 && (
+              <p className="text-sm text-depot-700/40">Nothing outstanding.</p>
+            )}
             {outstandingErrors.map((err) => (
-              <div key={err.id} className="flex items-center justify-between py-1.5 border-b border-flag/10 last:border-0">
-                <div className="text-sm">
-                  <p className="font-medium text-depot-900">
-                    {err.dispatch_logs?.driver_name} — {err.dispatch_logs?.log_date && new Date(err.dispatch_logs.log_date).toLocaleDateString()}
-                  </p>
-                  <p className="text-xs text-depot-700/70">{err.invoice_number} — {err.error_type} ({err.department})</p>
-                </div>
-                <button
-                  onClick={() => resolveOutstandingError(err.id, err.dispatch_log_id)}
-                  className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white text-flag border border-flag/30 shrink-0 ml-2"
-                >
-                  Mark resolved
-                </button>
+              <div key={err.id} className="py-2 border-b border-depot-700/10 last:border-0">
+                <p className="text-sm font-medium text-depot-900">
+                  {err.dispatch_logs?.driver_name} — {formatDMY(err.dispatch_logs?.log_date)}
+                </p>
+                <p className="text-xs text-depot-700/70">{err.invoice_number} — {err.error_type} ({err.department})</p>
               </div>
             ))}
             {outstandingUndelivered.map((item) => (
-              <div key={item.id} className="flex items-center justify-between py-1.5 border-b border-flag/10 last:border-0">
-                <div className="text-sm">
-                  <p className="font-medium text-depot-900">
-                    {item.dispatch_logs?.driver_name} — {item.dispatch_logs?.log_date && new Date(item.dispatch_logs.log_date).toLocaleDateString()}
-                  </p>
-                  <p className="text-xs text-depot-700/70">Undelivered: {item.invoice_number} — {item.customer} — RM {Number(item.amount).toLocaleString()}</p>
-                </div>
-                <button
-                  onClick={() => resolveOutstandingUndelivered(item.id)}
-                  className="text-xs font-semibold px-2.5 py-1 rounded-full bg-white text-flag border border-flag/30 shrink-0 ml-2"
-                >
-                  Mark resolved
-                </button>
+              <div key={item.id} className="py-2 border-b border-depot-700/10 last:border-0">
+                <p className="text-sm font-medium text-depot-900">
+                  {item.dispatch_logs?.driver_name} — {formatDMY(item.dispatch_logs?.log_date)}
+                </p>
+                <p className="text-xs text-depot-700/70">Undelivered: {item.invoice_number} — {item.customer} — RM {Number(item.amount).toLocaleString()}</p>
               </div>
             ))}
-          </section>
-        )}
-      </div>
+            <p className="text-xs text-depot-700/40 mt-4">
+              To resolve an undelivered DO, re-deliver it below using "Unresolved DO" in To Delivery, then mark this new tracker COMPLETE.
+            </p>
+          </div>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="max-w-2xl mx-auto px-4 py-6 space-y-6">
 
@@ -312,15 +318,96 @@ export default function NewLogPage() {
             <span className="text-sm text-depot-700/70">Total: RM {toDeliveryTotal.toLocaleString()}</span>
           </div>
           {toDelivery.map((row, i) => (
-            <RowGroup key={i} onRemove={toDelivery.length > 1 ? () => removeRow(setToDelivery)(i) : null}>
-              <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setToDelivery)(i, 'invoice', v)} />
-              <input value={row.customer} onChange={(e) => updateRow(setToDelivery)(i, 'customer', e.target.value)}
-                className="input" placeholder="Customer" />
-              <input type="number" step="0.01" value={row.amount} onChange={(e) => updateRow(setToDelivery)(i, 'amount', e.target.value)}
-                className="input" placeholder="Amount (RM)" />
-            </RowGroup>
+            <div key={i} className="mb-3 pb-3 border-b border-depot-700/5 last:border-0">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex-1 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => updateRow(setToDelivery)(i, 'mode', 'new')}
+                    className={`text-xs font-medium py-1.5 rounded-lg border ${row.mode === 'new' ? 'bg-route text-white border-route' : 'text-depot-700 border-depot-700/15'}`}>
+                    New
+                  </button>
+                  <button type="button" onClick={() => updateRow(setToDelivery)(i, 'mode', 'unresolved')}
+                    className={`text-xs font-medium py-1.5 rounded-lg border ${row.mode === 'unresolved' ? 'bg-flag text-white border-flag' : 'text-depot-700 border-depot-700/15'}`}>
+                    Unresolved DO
+                  </button>
+                </div>
+                {toDelivery.length > 1 && (
+                  <button type="button" onClick={() => removeRow(setToDelivery)(i)} className="text-depot-700/40 hover:text-flag text-lg px-1">×</button>
+                )}
+              </div>
+
+              {row.mode === 'new' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <InvoiceInput value={row.invoice} onChange={(v) => updateRow(setToDelivery)(i, 'invoice', v)} />
+                  <input value={row.customer} onChange={(e) => updateRow(setToDelivery)(i, 'customer', e.target.value)}
+                    className="input" placeholder="Customer" />
+                  <input type="number" step="0.01" value={row.amount} onChange={(e) => updateRow(setToDelivery)(i, 'amount', e.target.value)}
+                    className="input" placeholder="Amount (RM)" />
+                </div>
+              ) : (
+                <div>
+                  {(outstandingUndelivered.length + outstandingErrors.length) === 0 ? (
+                    <p className="text-xs text-depot-700/50 italic">
+                      Nothing outstanding to redeliver. If you expect one here, try refreshing the page.
+                    </p>
+                  ) : (
+                    <select
+                      value={row.resolvesUndeliveredId ? `undelivered:${row.resolvesUndeliveredId}` : row.resolvesErrorId ? `error:${row.resolvesErrorId}` : ''}
+                      onChange={async (e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        const [kind, optId] = val.split(':');
+
+                        if (kind === 'undelivered') {
+                          const picked = outstandingUndelivered.find((u) => u.id === optId);
+                          if (!picked) return;
+                          updateRow(setToDelivery)(i, 'invoice', picked.invoice_number.replace(/^DO-/, ''));
+                          updateRow(setToDelivery)(i, 'customer', picked.customer);
+                          updateRow(setToDelivery)(i, 'amount', String(picked.amount));
+                          updateRow(setToDelivery)(i, 'resolvesUndeliveredId', picked.id);
+                          updateRow(setToDelivery)(i, 'resolvesErrorId', null);
+                        } else {
+                          const picked = outstandingErrors.find((er) => er.id === optId);
+                          if (!picked) return;
+                          updateRow(setToDelivery)(i, 'invoice', picked.invoice_number.replace(/^DO-/, ''));
+                          updateRow(setToDelivery)(i, 'resolvesErrorId', picked.id);
+                          updateRow(setToDelivery)(i, 'resolvesUndeliveredId', null);
+                          // Errors don't store Customer/Amount themselves — look up the
+                          // matching invoice on that original tracker to auto-fill them.
+                          const { data: match } = await supabase
+                            .from('to_delivery_items')
+                            .select('customer, amount')
+                            .eq('dispatch_log_id', picked.dispatch_log_id)
+                            .eq('invoice_number', picked.invoice_number)
+                            .maybeSingle();
+                          updateRow(setToDelivery)(i, 'customer', match?.customer || '');
+                          updateRow(setToDelivery)(i, 'amount', match ? String(match.amount) : '');
+                        }
+                      }}
+                      className="input"
+                    >
+                      <option value="">Select an unresolved error or undelivered DO</option>
+                      {outstandingUndelivered.map((u) => (
+                        <option key={`undelivered:${u.id}`} value={`undelivered:${u.id}`}>
+                          Undelivered: {u.invoice_number} — {u.customer} — RM {Number(u.amount).toLocaleString()} ({u.dispatch_logs?.driver_name}, {formatDMY(u.dispatch_logs?.log_date)})
+                        </option>
+                      ))}
+                      {outstandingErrors.map((er) => (
+                        <option key={`error:${er.id}`} value={`error:${er.id}`}>
+                          Error: {er.invoice_number} — {er.error_type} ({er.department}) ({er.dispatch_logs?.driver_name}, {formatDMY(er.dispatch_logs?.log_date)})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {(row.resolvesUndeliveredId || row.resolvesErrorId) && (
+                    <p className="text-xs text-depot-700/60 mt-1.5">
+                      Re-delivering: DO-{row.invoice} — {row.customer || '(fill in customer)'} — RM {row.amount ? Number(row.amount).toLocaleString() : '(fill in amount)'}. Mark this tracker COMPLETE to resolve it.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
-          <AddButton onClick={() => addRow(setToDelivery)({ invoice: '', customer: '', amount: '' })} label="Add invoice row" />
+          <AddButton onClick={() => addRow(setToDelivery)({ mode: 'new', invoice: '', customer: '', amount: '', resolvesUndeliveredId: null, resolvesErrorId: null })} label="Add invoice row" />
         </section>
 
         {/* Amendment: UNDELIVERED DO */}
@@ -364,8 +451,8 @@ export default function NewLogPage() {
                   className="input" placeholder="Customer" />
                 <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
                 {row.type === 'cash' ? (
-                  <input type="number" step="0.01" value={row.cashAmount || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'cashAmount', e.target.value)}
-                    className="input" placeholder="Cash amount (RM)" />
+                  <input value={row.cashAmount || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'cashAmount', e.target.value)}
+                    className="input" placeholder="e.g. RM500 or USD100" />
                 ) : (
                   <input value={row.description || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'description', e.target.value)}
                     className="input" placeholder="Describe the stock" />

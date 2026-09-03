@@ -93,7 +93,7 @@ export default function MonthPage() {
                 <div className="mt-1 space-y-0.5">
                   {cashEntries.map((c, i) => (
                     <p key={i} className="text-xs text-depot-700/70">
-                      Cash RM {Number(c.cash_amount).toLocaleString()} from {c.customer} — {c.collected ? 'Collected' : 'Pending'}
+                      Cash {c.cash_amount} from {c.customer} — {c.collected ? 'Collected' : 'Pending'}
                     </p>
                   ))}
                 </div>
@@ -103,7 +103,7 @@ export default function MonthPage() {
                 <div className="mt-1 space-y-0.5">
                   {undeliveredEntries.map((u, i) => (
                     <p key={i} className="text-xs text-depot-700/70">
-                      Undelivered: {u.invoice_number} — {u.customer} — RM {Number(u.amount).toLocaleString()} — {u.resolved ? 'Resolved' : 'Pending'}
+                      Undelivered: {u.invoice_number} — {u.customer} — RM {Number(u.amount).toLocaleString()} — {u.resolved ? 'Resolved' : (u.invoice_number === 'DO-0' ? 'Not tracked' : 'Pending')}
                     </p>
                   ))}
                 </div>

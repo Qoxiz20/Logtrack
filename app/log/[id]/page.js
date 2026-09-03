@@ -56,7 +56,7 @@ export default function LogDetailPage() {
       .from('dispatch_logs')
       .select(`
         *,
-        to_delivery_items ( id, invoice_number, customer, amount, returned ),
+        to_delivery_items ( id, invoice_number, customer, amount, returned, resolves_undelivered_id, resolves_error_id ),
         from_delivery_items ( id, type, customer, do_number, cash_amount, description, collected ),
         mission_items ( id, task, done ),
         status_errors ( id, invoice_number, error_type, department, description, resolved ),
@@ -110,9 +110,10 @@ export default function LogDetailPage() {
     if (!turningOn && !isAdmin) return; // staff can tick, but never untick
 
     if (turningOn) {
-      const unresolvedErrors = log.status_errors.filter((e) => !e.resolved).length;
+      // DO-0 is a reusable placeholder code — exempt from every unresolved check here.
+      const unresolvedErrors = log.status_errors.filter((e) => !e.resolved && e.invoice_number !== 'DO-0').length;
       const uncollectedCash = log.from_delivery_items.filter((f) => f.type === 'cash' && !f.collected).length;
-      const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved).length;
+      const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved && u.invoice_number !== 'DO-0').length;
 
       if (unresolvedErrors > 0 || uncollectedCash > 0 || unresolvedUndelivered > 0) {
         const parts = [];
@@ -126,11 +127,43 @@ export default function LogDetailPage() {
     }
 
     const { error } = await supabase.from('dispatch_logs').update({ completed: !log.completed }).eq('id', id);
-    if (error) alert(error.message); // catches the database trigger too, if this check somehow got out of sync
+    if (error) {
+      alert(error.message); // catches the database trigger too, if this check somehow got out of sync
+      load();
+      return;
+    }
+
+    // Amendment: if any To Delivery row on THIS tracker was re-delivering an Undelivered DO
+    // from an earlier tracker, resolving it there now that this one is complete.
+    if (turningOn) {
+      const linkedUndelivered = log.to_delivery_items.filter((t) => t.resolves_undelivered_id);
+      for (const t of linkedUndelivered) {
+        await supabase.from('undelivered_items').update({ resolved: true }).eq('id', t.resolves_undelivered_id);
+      }
+
+      // Same idea for unresolved Status errors re-delivered here — also re-checks
+      // whether the ORIGINAL tracker now qualifies for its RM50 bonus.
+      const linkedErrors = log.to_delivery_items.filter((t) => t.resolves_error_id);
+      for (const t of linkedErrors) {
+        await supabase.from('status_errors').update({ resolved: true }).eq('id', t.resolves_error_id);
+        const { data: errRow } = await supabase.from('status_errors').select('dispatch_log_id').eq('id', t.resolves_error_id).single();
+        if (errRow) {
+          const { data: freshLog } = await supabase
+            .from('dispatch_logs')
+            .select('to_delivery_total, status_errors ( department, resolved )')
+            .eq('id', errRow.dispatch_log_id)
+            .single();
+          const qualifies = computeRewardEarned(freshLog.to_delivery_total, freshLog.status_errors);
+          await supabase.from('dispatch_logs').update({ reward_earned: qualifies }).eq('id', errRow.dispatch_log_id);
+        }
+      }
+    }
     load();
   }
 
-  // --- Amendment: Undelivered DO — same fields as To Delivery, add-only, resolvable ---
+  // --- Amendment: Undelivered DO — same fields as To Delivery, add-only.
+  // No manual resolve here anymore: it can ONLY be resolved by re-delivering it
+  // as an "Unresolved DO" on a new tracker's To Delivery section.
   async function addUndelivered() {
     if (!newUndelivered.invoice || !newUndelivered.customer || !newUndelivered.amount) return;
     await supabase.from('undelivered_items').insert({
@@ -141,10 +174,6 @@ export default function LogDetailPage() {
       resolved: false,
     });
     setNewUndelivered({ invoice: '', customer: '', amount: '' });
-    load();
-  }
-  async function toggleUndeliveredResolved(itemId, current) {
-    await supabase.from('undelivered_items').update({ resolved: !current }).eq('id', itemId);
     load();
   }
 
@@ -180,7 +209,7 @@ export default function LogDetailPage() {
       type: r.type,
       customer: r.customer,
       do_number: `DO-${r.doNumber}`,
-      cash_amount: r.type === 'cash' ? parseFloat(r.cashAmount) : null,
+      cash_amount: r.type === 'cash' ? r.cashAmount : null,
       description: r.type === 'stock' ? r.description : null,
       collected: false,
     });
@@ -345,7 +374,10 @@ export default function LogDetailPage() {
 
         {/* Amendment: Undelivered DO — DOs assigned to this driver that never got attempted */}
         <DetailSection title="Undelivered DO">
-          <p className="text-xs text-depot-700/60 mb-3">DOs assigned to this driver that never even got delivered.</p>
+          <p className="text-xs text-depot-700/60 mb-3">
+            DOs assigned to this driver that never even got delivered. Can only be resolved by
+            re-delivering it as an "Unresolved DO" on a new tracker's To Delivery section.
+          </p>
           {log.undelivered_items.length === 0 && <Empty />}
           {log.undelivered_items.map((item) => (
             <div key={item.id} className="flex items-center justify-between py-1.5 border-b border-depot-700/5 last:border-0">
@@ -353,15 +385,11 @@ export default function LogDetailPage() {
                 <p className="font-medium text-depot-900">{item.invoice_number} — {item.customer}</p>
                 <p className="text-xs text-depot-700/60">RM {Number(item.amount).toLocaleString()}</p>
               </div>
-              <button
-                onClick={() => toggleUndeliveredResolved(item.id, item.resolved)}
-                disabled={locked}
-                className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${
-                  item.resolved ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'
-                }`}
-              >
-                {item.resolved ? 'Resolved' : 'Pending — mark resolved'}
-              </button>
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${
+                item.resolved ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'
+              }`}>
+                {item.resolved ? 'Resolved' : (item.invoice_number === 'DO-0' ? 'Not tracked' : 'Pending')}
+              </span>
             </div>
           ))}
           {!locked && (
@@ -389,7 +417,7 @@ export default function LogDetailPage() {
               {item.type === 'cash' ? (
                 <div className="flex items-center justify-between">
                   <div className="text-sm">
-                    <p className="font-medium text-depot-900">Cash RM {Number(item.cash_amount).toLocaleString()} — {item.customer}</p>
+                    <p className="font-medium text-depot-900">Cash {item.cash_amount} — {item.customer}</p>
                     <p className="text-xs text-depot-700/60">{item.do_number}</p>
                   </div>
                   {isAdmin && !locked ? (
@@ -431,8 +459,8 @@ export default function LogDetailPage() {
                   className="input" placeholder="Customer" />
                 <InvoiceInput value={newFromDelivery.doNumber} onChange={(v) => setNewFromDelivery({ ...newFromDelivery, doNumber: v })} />
                 {newFromDelivery.type === 'cash' ? (
-                  <input type="number" step="0.01" value={newFromDelivery.cashAmount} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, cashAmount: e.target.value })}
-                    className="input" placeholder="Cash amount (RM)" />
+                  <input value={newFromDelivery.cashAmount} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, cashAmount: e.target.value })}
+                    className="input" placeholder="e.g. RM500 or USD100" />
                 ) : (
                   <input value={newFromDelivery.description} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, description: e.target.value })}
                     className="input" placeholder="Describe the stock" />
