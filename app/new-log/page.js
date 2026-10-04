@@ -13,7 +13,7 @@ export default function NewLogPage() {
   const [driverName, setDriverName] = useState('');
   const [foreman1, setForeman1] = useState('');
   const [foreman2, setForeman2] = useState('');
-  const [loaderName, setLoaderName] = useState(''); // Amendment 5: free text, optional
+  const [loaderName, setLoaderName] = useState(''); // optional; picked from the roster
   const [plateNumber, setPlateNumber] = useState(''); // Amendment 3: free text, optional
   const [logDate, setLogDate] = useState(new Date().toISOString().slice(0, 10));
   // Amendment 1: no manual amount field anymore — it's calculated below from To Delivery rows
@@ -22,6 +22,7 @@ export default function NewLogPage() {
   const [driversList, setDriversList] = useState([]);
   const [foremenList, setForemenList] = useState([]);
   const [loadersList, setLoadersList] = useState([]);
+  const [allPeople, setAllPeople] = useState([]); // loader dropdown: regular loaders first, then everyone else
 
   useEffect(() => {
     async function loadPeople() {
@@ -30,6 +31,7 @@ export default function NewLogPage() {
         setDriversList(data.filter((p) => p.role === 'driver'));
         setForemenList(data.filter((p) => p.role === 'foreman'));
         setLoadersList(data.filter((p) => p.role === 'loader'));
+        setAllPeople(data);
       }
     }
     loadPeople();
@@ -115,6 +117,13 @@ export default function NewLogPage() {
 
     if (!driverName || !logDate) {
       setSubmitError('Please fill in Driver and Date at the top.');
+      return;
+    }
+
+    // Anti-abuse: one person can't fill two slots in the same log (the database checks this too).
+    const filledSlots = [driverName, foreman1, foreman2, loaderName].filter(Boolean);
+    if (new Set(filledSlots).size !== filledSlots.length) {
+      setSubmitError('The same person can’t be in two places on one log (driver, foreman or loader).');
       return;
     }
 
@@ -359,7 +368,18 @@ export default function NewLogPage() {
             <Field label="Loader (optional)">
               <select value={loaderName} onChange={(e) => setLoaderName(e.target.value)} className="input">
                 <option value="">Select loader</option>
-                {loadersList.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+                {(() => {
+                  const taken = [driverName, foreman1, foreman2];
+                  const free = allPeople.filter((p) => !taken.includes(p.name));
+                  const regular = free.filter((p) => p.role === 'loader');
+                  const others = free.filter((p) => p.role !== 'loader');
+                  return (
+                    <>
+                      {regular.length > 0 && <optgroup label="Regular loaders">{regular.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}</optgroup>}
+                      {others.length > 0 && <optgroup label="Others">{others.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}</optgroup>}
+                    </>
+                  );
+                })()}
               </select>
             </Field>
             <Field label="Plate Number (optional)">

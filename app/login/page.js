@@ -3,10 +3,11 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { phoneToLoginId } from '@/lib/access';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
@@ -18,10 +19,11 @@ export default function LoginPage() {
     setLoading(true);
     // Must be set BEFORE signInWithPassword so the session gets stored in the right place
     window.localStorage.setItem('logtrack-remember', remember ? 'true' : 'false');
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    // People type their phone number; it's turned into their hidden login ID.
+    const { error } = await supabase.auth.signInWithPassword({ email: phoneToLoginId(phone), password });
     setLoading(false);
     if (error) {
-      setError(error.message);
+      setError('Wrong phone number or password. Please try again.');
     } else {
       router.push('/dashboard');
     }
@@ -32,18 +34,20 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <h1 className="font-display text-3xl text-paper font-bold tracking-tight">LHG Wheels</h1>
-          <p className="text-depot-100/70 text-sm mt-1">Dispatch logging & driver rewards</p>
+          <p className="text-depot-100/70 text-sm mt-1">Dispatch logging</p>
         </div>
 
         <form onSubmit={handleLogin} className="bg-paper rounded-xl p-6 shadow-xl">
-          <label className="block text-sm font-medium text-depot-800 mb-1">Email</label>
+          <label className="block text-sm font-medium text-depot-800 mb-1">Phone number</label>
           <input
-            type="email"
+            type="tel"
+            inputMode="tel"
+            autoComplete="username"
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
             className="w-full mb-4 px-3 py-2 rounded-lg border border-depot-700/20 focus:outline-none focus:ring-2 focus:ring-route"
-            placeholder="you@company.com"
+            placeholder="012-345 6789"
           />
 
           <label className="block text-sm font-medium text-depot-800 mb-1">Password</label>
@@ -73,7 +77,7 @@ export default function LoginPage() {
         </form>
 
         <p className="text-depot-100/50 text-xs text-center mt-4">
-          Dispatcher accounts are created in Supabase, not self-signup.
+          Accounts are created by Admin. Use the same phone number and password as LHG Journey.
         </p>
       </div>
     </div>

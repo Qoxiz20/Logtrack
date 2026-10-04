@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
 import NavDrawer from '@/components/NavDrawer';
+import { isAdminUser } from '@/lib/access';
 
 export default function LogDetailPage() {
   const router = useRouter();
@@ -18,6 +19,8 @@ export default function LogDetailPage() {
 
   // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
   const [driversList, setDriversList] = useState([]);
+  const [allPeople, setAllPeople] = useState([]); // for the loader dropdown (regular loaders first, then everyone else)
+  const [headerError, setHeaderError] = useState('');
   const [foremenList, setForemenList] = useState([]);
   const [editingHeader, setEditingHeader] = useState(false);
   const [headerForm, setHeaderForm] = useState(null);
@@ -40,6 +43,7 @@ export default function LogDetailPage() {
     if (data) {
       setDriversList(data.filter((p) => p.role === 'driver'));
       setForemenList(data.filter((p) => p.role === 'foreman'));
+      setAllPeople(data);
     }
   }
 
@@ -50,7 +54,7 @@ export default function LogDetailPage() {
       return;
     }
     const { data: { user } } = await supabase.auth.getUser();
-    setIsAdmin(user?.user_metadata?.role === 'admin');
+    setIsAdmin(isAdminUser(user));
 
     const { data, error } = await supabase
       .from('dispatch_logs')
@@ -96,7 +100,15 @@ export default function LogDetailPage() {
     setEditingHeader(true);
   }
   async function saveHeader() {
-    await supabase.from('dispatch_logs').update(headerForm).eq('id', id);
+    setHeaderError('');
+    // Anti-abuse: one person can't fill two slots in the same log (the database checks this too).
+    const filled = [headerForm.driver_name, headerForm.foreman_1, headerForm.foreman_2, headerForm.loader_name].filter(Boolean);
+    if (new Set(filled).size !== filled.length) {
+      setHeaderError('The same person can’t be in two places on one log (driver, foreman or loader).');
+      return;
+    }
+    const { error } = await supabase.from('dispatch_logs').update(headerForm).eq('id', id);
+    if (error) { setHeaderError('Couldn’t save: ' + error.message); return; }
     setEditingHeader(false);
     load();
   }
@@ -332,9 +344,13 @@ export default function LogDetailPage() {
                 <option value="">Select foreman 2</option>
                 {foremenList.filter((f) => f.name !== headerForm.foreman_1).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
               </select>
-              <input value={headerForm.loader_name} onChange={(e) => setHeaderForm({ ...headerForm, loader_name: e.target.value })} className="input" placeholder="Loader name" />
+              <select value={headerForm.loader_name} onChange={(e) => setHeaderForm({ ...headerForm, loader_name: e.target.value })} className="input">
+                <option value="">No loader</option>
+                <LoaderOptions people={allPeople} taken={[headerForm.driver_name, headerForm.foreman_1, headerForm.foreman_2]} current={headerForm.loader_name} />
+              </select>
               <input value={headerForm.plate_number} onChange={(e) => setHeaderForm({ ...headerForm, plate_number: e.target.value })} className="input" placeholder="Plate number" />
               <input type="date" value={headerForm.log_date} onChange={(e) => setHeaderForm({ ...headerForm, log_date: e.target.value })} className="input" />
+              {headerError && <p className="sm:col-span-3 text-flag text-sm">{headerError}</p>}
               <div className="sm:col-span-3 flex gap-2 mt-1">
                 <button onClick={saveHeader} className="bg-route text-white text-sm font-medium px-4 py-2 rounded-lg">Save Changes</button>
                 <button onClick={() => setEditingHeader(false)} className="text-depot-700/60 text-sm px-3 py-2">Cancel</button>
@@ -620,4 +636,19 @@ function DetailSection({ title, children }) {
 
 function Empty() {
   return <p className="text-sm text-depot-700/40">Nothing recorded.</p>;
+}
+
+// Loader dropdown: regular loaders first, then anyone else on the roster (busy days, anyone can load).
+// People already on this log as driver/foreman are left out.
+function LoaderOptions({ people, taken, current }) {
+  const free = people.filter((p) => !taken.includes(p.name) || p.name === current);
+  const loaders = free.filter((p) => p.role === 'loader');
+  const others = free.filter((p) => p.role !== 'loader');
+  return (
+    <>
+      {loaders.length > 0 && <optgroup label="Regular loaders">{loaders.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</optgroup>}
+      {others.length > 0 && <optgroup label="Others">{others.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</optgroup>}
+      {current && !people.some((p) => p.name === current) && <option value={current}>{current} (old entry)</option>}
+    </>
+  );
 }

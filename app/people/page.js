@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import NavDrawer from '@/components/NavDrawer';
+import { isAdminUser } from '@/lib/access';
 
 export default function PeoplePage() {
   const router = useRouter();
@@ -26,7 +27,7 @@ export default function PeoplePage() {
       return;
     }
     const { data: { user } } = await supabase.auth.getUser();
-    setIsAdmin(user?.user_metadata?.role === 'admin');
+    setIsAdmin(isAdminUser(user));
 
     const { data } = await supabase.from('people').select('*').order('name');
     setPeople(data || []);

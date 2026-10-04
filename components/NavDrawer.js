@@ -7,7 +7,7 @@ import { usePathname } from 'next/navigation';
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'LHG Wheels Home' },
   { href: '/people', label: 'Team Roster' },
-  { href: '/rewards', label: 'Reward System' },
+  { href: '/rewards', label: 'Rewards (reference)' },
 ];
 
 export default function NavDrawer() {
