@@ -54,7 +54,7 @@ export default function Dashboard() {
       <header className="bg-depot-900 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <NavDrawer />
-          <h1 className="font-display text-xl text-paper font-bold">LogTrack</h1>
+          <h1 className="font-display text-xl text-paper font-bold">LHG Wheels</h1>
         </div>
         <div className="flex gap-3">
           <Link

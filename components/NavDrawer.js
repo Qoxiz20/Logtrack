@@ -5,8 +5,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'LogTrack Home' },
-  { href: '/people', label: 'Drivers & Foremen' },
+  { href: '/dashboard', label: 'LHG Wheels Home' },
+  { href: '/people', label: 'Team Roster' },
   { href: '/rewards', label: 'Reward System' },
 ];
 
@@ -28,7 +28,7 @@ export default function NavDrawer() {
         <div className="fixed inset-0 z-50 flex">
           <div className="w-64 max-w-[80%] bg-depot-900 h-full p-5 flex flex-col gap-1 shadow-xl">
             <div className="flex items-center justify-between mb-6">
-              <span className="font-display text-paper font-bold text-lg">LogTrack</span>
+              <span className="font-display text-paper font-bold text-lg">LHG Wheels</span>
               <button onClick={() => setOpen(false)} aria-label="Close menu" className="text-depot-100/70 text-2xl leading-none">
                 ×
               </button>

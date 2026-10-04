@@ -15,7 +15,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-paper">
-      <p className="text-depot-700 font-body">Loading LogTrack…</p>
+      <p className="text-depot-700 font-body">Loading LHG Wheels…</p>
     </div>
   );
 }

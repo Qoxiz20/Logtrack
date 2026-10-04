@@ -12,6 +12,7 @@ export default function PeoplePage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [newDriverName, setNewDriverName] = useState('');
   const [newForemanName, setNewForemanName] = useState('');
+  const [newLoaderName, setNewLoaderName] = useState('');
   const [showInactive, setShowInactive] = useState(false);
 
   useEffect(() => {
@@ -46,12 +47,13 @@ export default function PeoplePage() {
 
   const drivers = people.filter((p) => p.role === 'driver' && (showInactive || p.active));
   const foremen = people.filter((p) => p.role === 'foreman' && (showInactive || p.active));
+  const loaders = people.filter((p) => p.role === 'loader' && (showInactive || p.active));
 
   return (
     <div className="min-h-screen bg-paper pb-16">
       <header className="bg-depot-900 px-6 py-4 flex items-center gap-3">
         <NavDrawer />
-        <h1 className="font-display text-xl text-paper font-bold">Drivers & Foremen</h1>
+        <h1 className="font-display text-xl text-paper font-bold">Team Roster</h1>
       </header>
 
       <main className="max-w-2xl mx-auto px-4 py-6 space-y-6">
@@ -82,6 +84,17 @@ export default function PeoplePage() {
                   onChange={setNewForemanName}
                   onAdd={() => addPerson('foreman', newForemanName, setNewForemanName)}
                   placeholder="New foreman name"
+                />
+              )}
+            </PeopleSection>
+
+            <PeopleSection title="Loaders" people={loaders} isAdmin={isAdmin} onToggle={toggleActive}>
+              {isAdmin && (
+                <AddForm
+                  value={newLoaderName}
+                  onChange={setNewLoaderName}
+                  onAdd={() => addPerson('loader', newLoaderName, setNewLoaderName)}
+                  placeholder="New loader name"
                 />
               )}
             </PeopleSection>

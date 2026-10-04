@@ -31,7 +31,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-depot-900 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="font-display text-3xl text-paper font-bold tracking-tight">LogTrack</h1>
+          <h1 className="font-display text-3xl text-paper font-bold tracking-tight">LHG Wheels</h1>
           <p className="text-depot-100/70 text-sm mt-1">Dispatch logging & driver rewards</p>
         </div>
 

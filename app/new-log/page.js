@@ -21,6 +21,7 @@ export default function NewLogPage() {
   // Amendment 2 (people-list dropdowns): fetch the active drivers & foremen once on page load
   const [driversList, setDriversList] = useState([]);
   const [foremenList, setForemenList] = useState([]);
+  const [loadersList, setLoadersList] = useState([]);
 
   useEffect(() => {
     async function loadPeople() {
@@ -28,6 +29,7 @@ export default function NewLogPage() {
       if (data) {
         setDriversList(data.filter((p) => p.role === 'driver'));
         setForemenList(data.filter((p) => p.role === 'foreman'));
+        setLoadersList(data.filter((p) => p.role === 'loader'));
       }
     }
     loadPeople();
@@ -128,6 +130,13 @@ export default function NewLogPage() {
     );
     if (missingDetails) {
       setSubmitError('One of your "Unresolved DO" rows is missing Customer or Amount — please fill those in before saving.');
+      return;
+    }
+
+    const cashDOs = fromDelivery.filter((r) => r.type === 'cash' && r.doNumber).map((r) => r.doNumber);
+    const duplicateCashDO = cashDOs.find((d, idx) => cashDOs.indexOf(d) !== idx);
+    if (duplicateCashDO) {
+      setSubmitError(`DO-${duplicateCashDO} has more than one Cash entry — please remove the duplicate before saving.`);
       return;
     }
 
@@ -348,8 +357,10 @@ export default function NewLogPage() {
               </select>
             </Field>
             <Field label="Loader (optional)">
-              <input value={loaderName} onChange={(e) => setLoaderName(e.target.value)}
-                className="input" placeholder="Loader name" />
+              <select value={loaderName} onChange={(e) => setLoaderName(e.target.value)} className="input">
+                <option value="">Select loader</option>
+                {loadersList.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+              </select>
             </Field>
             <Field label="Plate Number (optional)">
               <input value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)}
@@ -532,10 +543,53 @@ export default function NewLogPage() {
                 <button type="button" onClick={() => removeRow(setFromDelivery)(i)} className="text-depot-700/40 hover:text-flag text-lg px-1">×</button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {row.type === 'cash' ? (
+                (() => {
+                  // DO must match what was actually delivered today — sourced from this
+                  // tracker's own To Delivery list. A DO already used by another Cash row
+                  // is removed from the list so the same DO can't be entered twice.
+                  const usedCashDOs = fromDelivery
+                    .filter((r, idx) => idx !== i && r.type === 'cash' && !r.doIsOther && r.doNumber)
+                    .map((r) => `DO-${r.doNumber}`);
+                  const availableDOs = [...new Set(toDelivery.filter((r) => r.invoice).map((r) => `DO-${r.invoice}`))]
+                    .filter((d) => !usedCashDOs.includes(d));
+                  return (
+                    <div className="mb-2">
+                      <select
+                        value={row.doIsOther ? 'OTHERS' : (row.doNumber ? `DO-${row.doNumber}` : '')}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === 'OTHERS') {
+                            updateRow(setFromDelivery)(i, 'doIsOther', true);
+                            updateRow(setFromDelivery)(i, 'doNumber', '');
+                          } else {
+                            updateRow(setFromDelivery)(i, 'doIsOther', false);
+                            updateRow(setFromDelivery)(i, 'doNumber', v ? v.replace(/^DO-/, '') : '');
+                          }
+                        }}
+                        className="input"
+                      >
+                        <option value="">Select DO</option>
+                        {availableDOs.map((d) => <option key={d} value={d}>{d}</option>)}
+                        <option value="OTHERS">Others (type manually)</option>
+                      </select>
+                      {row.doIsOther && (
+                        <div className="mt-2">
+                          <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                <div className="mb-2">
+                  <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input value={row.customer || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'customer', e.target.value)}
                   className="input" placeholder="Customer" />
-                <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
                 {row.type === 'cash' ? (
                   <input value={row.cashAmount || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'cashAmount', e.target.value)}
                     className="input" placeholder="e.g. RM500 or USD100" />
@@ -546,7 +600,7 @@ export default function NewLogPage() {
               </div>
             </div>
           ))}
-          <AddButton onClick={() => addRow(setFromDelivery)({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' })} label="Add item" />
+          <AddButton onClick={() => addRow(setFromDelivery)({ type: 'stock', customer: '', doNumber: '', doIsOther: false, description: '', cashAmount: '' })} label="Add item" />
         </section>
 
         {/* PART 4: MISSION */}

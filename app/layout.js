@@ -1,7 +1,7 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'LogTrack — Dispatch & Rewards',
+  title: 'LHG Wheels — Dispatch & Rewards',
   description: 'Log deliveries, flag errors, track driver rewards.',
   manifest: '/manifest.json',
 };
