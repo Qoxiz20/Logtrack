@@ -46,9 +46,12 @@ export default function PeoplePage() {
     load();
   }
 
-  const drivers = people.filter((p) => p.role === 'driver' && (showInactive || p.active));
-  const foremen = people.filter((p) => p.role === 'foreman' && (showInactive || p.active));
-  const loaders = people.filter((p) => p.role === 'loader' && (showInactive || p.active));
+  // People linked to LHG Journey are managed there (department decides who is in Wheels).
+  const fromJourney = people.filter((p) => p.employee_id && (showInactive || p.active));
+  const manual = people.filter((p) => !p.employee_id);
+  const drivers = manual.filter((p) => p.role === 'driver' && (showInactive || p.active));
+  const foremen = manual.filter((p) => p.role === 'foreman' && (showInactive || p.active));
+  const loaders = manual.filter((p) => p.role === 'loader' && (showInactive || p.active));
 
   return (
     <div className="min-h-screen bg-paper pb-16">
@@ -66,6 +69,20 @@ export default function PeoplePage() {
               <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
               Show deactivated people too
             </label>
+
+            <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
+              <h2 className="font-display font-semibold text-depot-900">From LHG Journey</h2>
+              <p className="text-xs text-depot-700/60 mb-3">Added, changed and removed in LHG Journey; this list follows automatically. Which box someone appears in comes from their department and position (Journey → Settings).</p>
+              {fromJourney.length === 0 && <p className="text-sm text-depot-700/40">Nobody linked yet.</p>}
+              {fromJourney.map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-3 py-1.5 border-b border-depot-700/5 last:border-0">
+                  <span className={p.active ? '' : 'text-depot-700/40 line-through'}>{p.name}</span>
+                  <span className="text-xs text-depot-700/60 text-right">{[p.position, p.department].filter(Boolean).join(' · ')}</span>
+                </div>
+              ))}
+            </section>
+
+            <p className="text-xs text-depot-700/60 pt-2">Older entries added here in Wheels (until everyone is in LHG Journey):</p>
 
             <PeopleSection title="Drivers" people={drivers} isAdmin={isAdmin} onToggle={toggleActive}>
               {isAdmin && (

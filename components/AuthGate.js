@@ -34,7 +34,7 @@ export default function AuthGate({ children }) {
       <div className="min-h-screen bg-depot-900 flex items-center justify-center px-4">
         <div className="bg-paper rounded-xl p-6 shadow-xl max-w-sm w-full text-center">
           <h1 className="font-display text-xl font-bold text-depot-900">No access to LHG Wheels</h1>
-          <p className="text-sm text-depot-700 mt-2">LHG Wheels is for Admin, HR, Operation and Logistics. If you think this is wrong, please ask Liau.</p>
+          <p className="text-sm text-depot-700 mt-2">Your login hasn’t been given access to LHG Wheels. If you need it, please ask Liau.</p>
           <button
             onClick={async () => { await supabase.auth.signOut(); router.replace('/login'); }}
             className="mt-5 w-full bg-route text-white font-medium py-2.5 rounded-lg"

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { REWARD_THRESHOLD, REWARD_AMOUNT, ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
 import NavDrawer from '@/components/NavDrawer';
+import CrewSelect from '@/components/CrewSelect';
 
 export default function NewLogPage() {
   const router = useRouter();
@@ -22,16 +23,19 @@ export default function NewLogPage() {
   const [driversList, setDriversList] = useState([]);
   const [foremenList, setForemenList] = useState([]);
   const [loadersList, setLoadersList] = useState([]);
-  const [allPeople, setAllPeople] = useState([]); // loader dropdown: regular loaders first, then everyone else
+  const [allPeople, setAllPeople] = useState([]);
+  const [crewRules, setCrewRules] = useState([]); // Wheels rules from LHG Journey (who goes in which box) // loader dropdown: regular loaders first, then everyone else
 
   useEffect(() => {
     async function loadPeople() {
-      const { data } = await supabase.from('people').select('id, name, role').eq('active', true).order('name');
+      const { data } = await supabase.from('people').select('id, name, role, department, position, employee_id').eq('active', true).order('name');
       if (data) {
         setDriversList(data.filter((p) => p.role === 'driver'));
         setForemenList(data.filter((p) => p.role === 'foreman'));
         setLoadersList(data.filter((p) => p.role === 'loader'));
         setAllPeople(data);
+      const { data: rules } = await supabase.from('app_name_rules').select('slot, department, position').eq('app_key', 'wheels');
+      setCrewRules(rules || []);
       }
     }
     loadPeople();
@@ -348,39 +352,16 @@ export default function NewLogPage() {
           <h2 className="font-display font-semibold text-depot-900 mb-4">Dispatch Details</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Field label="Driver">
-              <select value={driverName} onChange={(e) => setDriverName(e.target.value)} className="input">
-                <option value="">Select driver</option>
-                {driversList.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
-              </select>
+              <CrewSelect slot="driver" value={driverName} onChange={setDriverName} people={allPeople} rules={crewRules} taken={[foreman1, foreman2, loaderName]} placeholder="Select driver" />
             </Field>
             <Field label="Foreman 1">
-              <select value={foreman1} onChange={(e) => setForeman1(e.target.value)} className="input">
-                <option value="">Select foreman 1</option>
-                {foremenList.filter((f) => f.name !== foreman2).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-              </select>
+              <CrewSelect slot="foreman" value={foreman1} onChange={setForeman1} people={allPeople} rules={crewRules} taken={[driverName, foreman2, loaderName]} placeholder="Select foreman 1" />
             </Field>
             <Field label="Foreman 2">
-              <select value={foreman2} onChange={(e) => setForeman2(e.target.value)} className="input">
-                <option value="">Select foreman 2</option>
-                {foremenList.filter((f) => f.name !== foreman1).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-              </select>
+              <CrewSelect slot="foreman" value={foreman2} onChange={setForeman2} people={allPeople} rules={crewRules} taken={[driverName, foreman1, loaderName]} placeholder="Select foreman 2" />
             </Field>
             <Field label="Loader (optional)">
-              <select value={loaderName} onChange={(e) => setLoaderName(e.target.value)} className="input">
-                <option value="">Select loader</option>
-                {(() => {
-                  const taken = [driverName, foreman1, foreman2];
-                  const free = allPeople.filter((p) => !taken.includes(p.name));
-                  const regular = free.filter((p) => p.role === 'loader');
-                  const others = free.filter((p) => p.role !== 'loader');
-                  return (
-                    <>
-                      {regular.length > 0 && <optgroup label="Regular loaders">{regular.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}</optgroup>}
-                      {others.length > 0 && <optgroup label="Others">{others.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}</optgroup>}
-                    </>
-                  );
-                })()}
-              </select>
+              <CrewSelect slot="loader" value={loaderName} onChange={setLoaderName} people={allPeople} rules={crewRules} taken={[driverName, foreman1, foreman2]} placeholder="Select loader" />
             </Field>
             <Field label="Plate Number (optional)">
               <input value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)}

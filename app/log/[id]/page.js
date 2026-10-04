@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
 import NavDrawer from '@/components/NavDrawer';
 import { isAdminUser } from '@/lib/access';
+import CrewSelect from '@/components/CrewSelect';
 
 export default function LogDetailPage() {
   const router = useRouter();
@@ -19,7 +20,8 @@ export default function LogDetailPage() {
 
   // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
   const [driversList, setDriversList] = useState([]);
-  const [allPeople, setAllPeople] = useState([]); // for the loader dropdown (regular loaders first, then everyone else)
+  const [allPeople, setAllPeople] = useState([]);
+  const [crewRules, setCrewRules] = useState([]); // Wheels rules from LHG Journey (who goes in which box) // for the loader dropdown (regular loaders first, then everyone else)
   const [headerError, setHeaderError] = useState('');
   const [foremenList, setForemenList] = useState([]);
   const [editingHeader, setEditingHeader] = useState(false);
@@ -39,11 +41,13 @@ export default function LogDetailPage() {
   }, [id]);
 
   async function loadPeople() {
-    const { data } = await supabase.from('people').select('id, name, role').eq('active', true).order('name');
+    const { data } = await supabase.from('people').select('id, name, role, department, position, employee_id').eq('active', true).order('name');
     if (data) {
       setDriversList(data.filter((p) => p.role === 'driver'));
       setForemenList(data.filter((p) => p.role === 'foreman'));
       setAllPeople(data);
+      const { data: rules } = await supabase.from('app_name_rules').select('slot, department, position').eq('app_key', 'wheels');
+      setCrewRules(rules || []);
     }
   }
 
@@ -332,22 +336,10 @@ export default function LogDetailPage() {
           )}
           {!locked && editingHeader && headerForm && (
             <div className="mt-4 pt-4 border-t border-depot-700/10 grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <select value={headerForm.driver_name} onChange={(e) => setHeaderForm({ ...headerForm, driver_name: e.target.value })} className="input">
-                <option value="">Select driver</option>
-                {driversList.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
-              </select>
-              <select value={headerForm.foreman_1} onChange={(e) => setHeaderForm({ ...headerForm, foreman_1: e.target.value })} className="input">
-                <option value="">Select foreman 1</option>
-                {foremenList.filter((f) => f.name !== headerForm.foreman_2).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-              </select>
-              <select value={headerForm.foreman_2} onChange={(e) => setHeaderForm({ ...headerForm, foreman_2: e.target.value })} className="input">
-                <option value="">Select foreman 2</option>
-                {foremenList.filter((f) => f.name !== headerForm.foreman_1).map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-              </select>
-              <select value={headerForm.loader_name} onChange={(e) => setHeaderForm({ ...headerForm, loader_name: e.target.value })} className="input">
-                <option value="">No loader</option>
-                <LoaderOptions people={allPeople} taken={[headerForm.driver_name, headerForm.foreman_1, headerForm.foreman_2]} current={headerForm.loader_name} />
-              </select>
+              <CrewSelect slot="driver" value={headerForm.driver_name} onChange={(v) => setHeaderForm({ ...headerForm, driver_name: v })} people={allPeople} rules={crewRules} taken={[headerForm.foreman_1, headerForm.foreman_2, headerForm.loader_name]} placeholder="Select driver" />
+              <CrewSelect slot="foreman" value={headerForm.foreman_1} onChange={(v) => setHeaderForm({ ...headerForm, foreman_1: v })} people={allPeople} rules={crewRules} taken={[headerForm.driver_name, headerForm.foreman_2, headerForm.loader_name]} placeholder="Select foreman 1" />
+              <CrewSelect slot="foreman" value={headerForm.foreman_2} onChange={(v) => setHeaderForm({ ...headerForm, foreman_2: v })} people={allPeople} rules={crewRules} taken={[headerForm.driver_name, headerForm.foreman_1, headerForm.loader_name]} placeholder="Select foreman 2" />
+              <CrewSelect slot="loader" value={headerForm.loader_name} onChange={(v) => setHeaderForm({ ...headerForm, loader_name: v })} people={allPeople} rules={crewRules} taken={[headerForm.driver_name, headerForm.foreman_1, headerForm.foreman_2]} placeholder="No loader" />
               <input value={headerForm.plate_number} onChange={(e) => setHeaderForm({ ...headerForm, plate_number: e.target.value })} className="input" placeholder="Plate number" />
               <input type="date" value={headerForm.log_date} onChange={(e) => setHeaderForm({ ...headerForm, log_date: e.target.value })} className="input" />
               {headerError && <p className="sm:col-span-3 text-flag text-sm">{headerError}</p>}
@@ -638,17 +630,3 @@ function Empty() {
   return <p className="text-sm text-depot-700/40">Nothing recorded.</p>;
 }
 
-// Loader dropdown: regular loaders first, then anyone else on the roster (busy days, anyone can load).
-// People already on this log as driver/foreman are left out.
-function LoaderOptions({ people, taken, current }) {
-  const free = people.filter((p) => !taken.includes(p.name) || p.name === current);
-  const loaders = free.filter((p) => p.role === 'loader');
-  const others = free.filter((p) => p.role !== 'loader');
-  return (
-    <>
-      {loaders.length > 0 && <optgroup label="Regular loaders">{loaders.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</optgroup>}
-      {others.length > 0 && <optgroup label="Others">{others.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</optgroup>}
-      {current && !people.some((p) => p.name === current) && <option value={current}>{current} (old entry)</option>}
-    </>
-  );
-}

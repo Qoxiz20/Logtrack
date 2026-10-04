@@ -1,6 +1,6 @@
 # LHG Wheels (formerly LogTrack) — Project State
 
-Last synced against actual source: `LHG_Wheels_Oct4.zip` uploaded 2026-10-04, plus migration 12 package.
+Last synced: `LHG_Wheels_Oct4.zip` (4 Oct 2026) + migration 12 package (live) + migration 13 / Journey link package.
 Summary for orientation only — for any code change, re-upload the real current files.
 
 ## Stack
@@ -17,7 +17,8 @@ Next.js 14 (App Router) + Supabase (Postgres, Auth, RLS) + Tailwind. PWA. Hosted
 - `app_metadata.role = 'admin'` → admin. `app_metadata.apps` = list of apps a person may open
   (e.g. `["wheels"]`). Journey will set `apps` from each person's department.
 - DB helpers: `public.is_admin()`, `public.can_use_wheels()` (admin OR apps contains "wheels").
-- **Who may open Wheels:** Admin, HR, Operation, Logistics. Enforced in RLS and in `components/AuthGate.js`.
+- **Who may open Wheels:** Admin, plus people Liau ticks for "LHG Wheels" on their Journey profile (today:
+  Logistics officer, Warehouse officer, Operation officer). Enforced in RLS (`can_use_wheels()`) and AuthGate.
 - Accounts today (both admin): Liau `011-3630 8766`, Hin Gen company account `014-618 9180`
   (company account to be removed by Liau once officers have their own logins).
 - Blocking/deleting logins: Supabase dashboard (Ban/Delete) until Journey's People page has the buttons
@@ -71,7 +72,27 @@ supabase/ schema, migrations 2, 5 (RECORD ONLY), 6, 7, 8, 9, 10, 11, 12 (+ 12 RO
 - Loader dropdown: regular loaders first, then anyone else on the roster (busy days anyone can load).
 - No deletes on child rows; only admin deletes a whole log.
 
-## Planned with LHG Journey Phase 1
+## Link with LHG Journey (migration 13) — THE LHG STRUCTURE
+Every LHG app has two kinds of people:
+1. **Users** (open the app, fill in, save, complete) = a tick on the person's Journey profile
+   (table `employee_apps`). Only Admin (Liau) can tick. Admin can always use every app.
+   Login's `app_metadata.apps` = ['journey', ...ticked apps]; synced by trigger. Wheels checks
+   `can_use_wheels()` = admin OR apps contains 'wheels'. HR needs the tick like everyone else.
+2. **Names in the app** (e.g. the driver on a log) = automatic from **department + position**, using
+   `app_name_rules` set in Journey → Settings. Appearing in an app does NOT let you open it.
+- Wheels rules today: **Driver box = Logistics dept · Foreman box = Warehouse dept · Loader box = position
+  Officer (any dept)**. Officers in Logistics/Warehouse appear in both their department box and Loader.
+- `employees` (Journey) is the master list: department (list), position (list), job description (free text).
+  Departments and positions are lists Liau manages in Journey → Settings.
+- Trigger syncs matching active employees into `people` (name = nickname or full name, department, position,
+  employee_id); others → `active = false`. Existing unlinked `people` rows with the same name are linked.
+- `components/CrewSelect.js`: linked people by the rules; older manual entries by their Wheels role.
+- Team Roster: "From LHG Journey" (read-only) above older manual entries (Add/Deactivate stay for those
+  until everyone is in Journey).
+- Logins: phone + password; HR creates them in Journey; block/unblock/delete = Liau only. No self-signup
+  (Supabase "Allow new users to sign up" switched off).
+
+## Still planned
 - Journey tables in this project; People page = the place to create/block/reset/delete logins.
 - `people` rows linked to Journey employees; roster managed in Journey (Wheels Team Roster → view-only).
 - Trigger: log ticked COMPLETE with reward → Journey Track record entry per crew member; untick → reversal.
