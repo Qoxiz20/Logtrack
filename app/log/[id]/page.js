@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
 import NavDrawer from '@/components/NavDrawer';
-import { isAdminUser } from '@/lib/access';
+import { isAdminUser, hasPower } from '@/lib/access';
 import CrewSelect from '@/components/CrewSelect';
 
 export default function LogDetailPage() {
@@ -16,6 +16,8 @@ export default function LogDetailPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canFix, setCanFix] = useState(false);   // power: delete or reopen logs
+  const [canCash, setCanCash] = useState(false); // power: confirm cash collected
   const [deleting, setDeleting] = useState(false);
 
   // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
@@ -59,6 +61,8 @@ export default function LogDetailPage() {
     }
     const { data: { user } } = await supabase.auth.getUser();
     setIsAdmin(isAdminUser(user));
+    setCanFix(hasPower(user, 'wheels_delete'));
+    setCanCash(hasPower(user, 'wheels_cash'));
 
     const { data, error } = await supabase
       .from('dispatch_logs')
@@ -123,7 +127,7 @@ export default function LogDetailPage() {
   // this client-side version just gives a friendlier message before that trigger fires.
   async function toggleCompleted() {
     const turningOn = !log.completed;
-    if (!turningOn && !isAdmin) return; // staff can tick, but never untick
+    if (!turningOn && !canFix) return; // anyone can tick; reopening needs the power (or the Owner)
 
     if (turningOn) {
       // DO-0 is a reusable placeholder code — exempt from every unresolved check here.
@@ -142,7 +146,10 @@ export default function LogDetailPage() {
       if (!confirm('Mark this dispatch log as COMPLETE? No more changes can be made to it until an admin un-ticks it.')) return;
     }
 
-    const { error } = await supabase.from('dispatch_logs').update({ completed: !log.completed }).eq('id', id);
+    // Ticking: normal update. Reopening: goes through the secure database function that checks the power.
+    const { error } = turningOn
+      ? await supabase.from('dispatch_logs').update({ completed: true }).eq('id', id)
+      : await supabase.rpc('wheels_reopen_log', { log_id: id });
     if (error) {
       alert(error.message); // catches the database trigger too, if this check somehow got out of sync
       load();
@@ -232,9 +239,10 @@ export default function LogDetailPage() {
     setNewFromDelivery({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' });
     load();
   }
-  // Admin-only — enforced in the UI here, and the completed-lock is enforced at the database level too
+  // Owner, or whoever has the "confirm cash collected" power — checked inside the database.
   async function toggleCollected(itemId, current) {
-    await supabase.from('from_delivery_items').update({ collected: !current }).eq('id', itemId);
+    const { error } = await supabase.rpc('wheels_set_collected', { item_id: itemId, val: !current });
+    if (error) alert(error.message);
     load();
   }
 
@@ -272,7 +280,7 @@ export default function LogDetailPage() {
   async function deleteLog() {
     if (!confirm(`Delete this dispatch log for ${log.driver_name}? This cannot be undone.`)) return;
     setDeleting(true);
-    const { error } = await supabase.from('dispatch_logs').delete().eq('id', id);
+    const { error } = await supabase.rpc('wheels_delete_log', { log_id: id }); // checks the power in the database
     if (error) {
       alert('Could not delete: ' + error.message);
       setDeleting(false);
@@ -428,7 +436,7 @@ export default function LogDetailPage() {
                     <p className="font-medium text-depot-900">Cash {item.cash_amount} — {item.customer}</p>
                     <p className="text-xs text-depot-700/60">{item.do_number}</p>
                   </div>
-                  {isAdmin && !locked ? (
+                  {canCash && !locked ? (
                     <button
                       onClick={() => toggleCollected(item.id, item.collected)}
                       className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ml-2 ${item.collected ? 'bg-bonus-light text-bonus' : 'bg-flag-light text-flag'}`}
@@ -559,7 +567,7 @@ export default function LogDetailPage() {
 
         {/* Amendment 1: COMPLETE lock — staff can tick, only admin can un-tick */}
         <section className={`rounded-xl p-4 border ${locked ? 'bg-bonus-light border-bonus/30' : 'bg-depot-100 border-depot-700/10'}`}>
-          {isAdmin || !locked ? (
+          {canFix || !locked ? (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={locked} onChange={toggleCompleted} />
               <span className={`text-sm font-medium ${locked ? 'text-bonus' : 'text-depot-700'}`}>
@@ -568,12 +576,12 @@ export default function LogDetailPage() {
             </label>
           ) : (
             <p className="text-sm font-medium text-bonus">
-              This log is marked COMPLETE. Only an admin can reopen it.
+              This log is marked COMPLETE. Only Liau (or someone he gives the power to) can reopen it.
             </p>
           )}
         </section>
 
-        {isAdmin && (
+        {canFix && (
           <button
             onClick={deleteLog}
             disabled={deleting}
