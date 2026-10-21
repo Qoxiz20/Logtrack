@@ -17,8 +17,9 @@ export default function LogDetailPage() {
   const [loadError, setLoadError] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [canFix, setCanFix] = useState(false);   // power: delete or reopen logs
-  const [canCash, setCanCash] = useState(false); // power: confirm cash collected
+  const [canCash, setCanCash] = useState(false); // power: confirm cash/cheque collected
   const [deleting, setDeleting] = useState(false);
+  const [reopening, setReopening] = useState(false);
 
   // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
   const [driversList, setDriversList] = useState([]);
@@ -30,7 +31,8 @@ export default function LogDetailPage() {
   const [headerForm, setHeaderForm] = useState(null);
 
   // Small "add new item" inputs for the editable sections
-  const [newFromDelivery, setNewFromDelivery] = useState({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' });
+  // Latest amendment: From Delivery is now Money (Cash or Cheque) or Stocks.
+  const [newFromDelivery, setNewFromDelivery] = useState({ type: 'stock', customer: '', doNumber: '', chequeNumber: '', description: '', cashAmount: '' });
   const [newMissionTask, setNewMissionTask] = useState('');
   const [newError, setNewError] = useState({ errorType: '', department: '', invoice: '', description: '' });
   const [newToDelivery, setNewToDelivery] = useState({ invoice: '', customer: '', amount: '' });
@@ -69,7 +71,7 @@ export default function LogDetailPage() {
       .select(`
         *,
         to_delivery_items ( id, invoice_number, customer, amount, returned, resolves_undelivered_id, resolves_error_id ),
-        from_delivery_items ( id, type, customer, do_number, cash_amount, description, collected ),
+        from_delivery_items ( id, type, customer, do_number, cheque_number, cash_amount, description, collected ),
         mission_items ( id, task, done ),
         status_errors ( id, invoice_number, error_type, department, description, resolved ),
         undelivered_items ( id, invoice_number, customer, amount, resolved )
@@ -121,66 +123,19 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- COMPLETE toggle: staff can tick, only admin can un-tick, and NOBODY can tick
-  // while anything is unresolved (unresolved errors, uncollected cash, undelivered DOs).
-  // This check mirrors a database trigger that enforces the same rule with no bypass —
-  // this client-side version just gives a friendlier message before that trigger fires.
-  async function toggleCompleted() {
-    const turningOn = !log.completed;
-    if (!turningOn && !canFix) return; // anyone can tick; reopening needs the power (or the Owner)
-
-    if (turningOn) {
-      // DO-0 is a reusable placeholder code — exempt from every unresolved check here.
-      const unresolvedErrors = log.status_errors.filter((e) => !e.resolved && e.invoice_number !== 'DO-0').length;
-      const uncollectedCash = log.from_delivery_items.filter((f) => f.type === 'cash' && !f.collected).length;
-      const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved && u.invoice_number !== 'DO-0').length;
-
-      if (unresolvedErrors > 0 || uncollectedCash > 0 || unresolvedUndelivered > 0) {
-        const parts = [];
-        if (unresolvedErrors > 0) parts.push(`${unresolvedErrors} unresolved error(s)`);
-        if (uncollectedCash > 0) parts.push(`${uncollectedCash} uncollected cash entry(ies)`);
-        if (unresolvedUndelivered > 0) parts.push(`${unresolvedUndelivered} undelivered DO(s)`);
-        alert(`Cannot mark COMPLETE yet — please resolve first: ${parts.join(', ')}.`);
-        return;
-      }
-      if (!confirm('Mark this dispatch log as COMPLETE? No more changes can be made to it until an admin un-ticks it.')) return;
-    }
-
-    // Ticking: normal update. Reopening: goes through the secure database function that checks the power.
-    const { error } = turningOn
-      ? await supabase.from('dispatch_logs').update({ completed: true }).eq('id', id)
-      : await supabase.rpc('wheels_reopen_log', { log_id: id });
-    if (error) {
-      alert(error.message); // catches the database trigger too, if this check somehow got out of sync
-      load();
-      return;
-    }
-
-    // Amendment: if any To Delivery row on THIS tracker was re-delivering an Undelivered DO
-    // from an earlier tracker, resolving it there now that this one is complete.
-    if (turningOn) {
-      const linkedUndelivered = log.to_delivery_items.filter((t) => t.resolves_undelivered_id);
-      for (const t of linkedUndelivered) {
-        await supabase.from('undelivered_items').update({ resolved: true }).eq('id', t.resolves_undelivered_id);
-      }
-
-      // Same idea for unresolved Status errors re-delivered here — also re-checks
-      // whether the ORIGINAL tracker now qualifies for its RM50 bonus.
-      const linkedErrors = log.to_delivery_items.filter((t) => t.resolves_error_id);
-      for (const t of linkedErrors) {
-        await supabase.from('status_errors').update({ resolved: true }).eq('id', t.resolves_error_id);
-        const { data: errRow } = await supabase.from('status_errors').select('dispatch_log_id').eq('id', t.resolves_error_id).single();
-        if (errRow) {
-          const { data: freshLog } = await supabase
-            .from('dispatch_logs')
-            .select('to_delivery_total, status_errors ( department, resolved )')
-            .eq('id', errRow.dispatch_log_id)
-            .single();
-          const qualifies = computeRewardEarned(freshLog.to_delivery_total, freshLog.status_errors);
-          await supabase.from('dispatch_logs').update({ reward_earned: qualifies }).eq('id', errRow.dispatch_log_id);
-        }
-      }
-    }
+  // --- COMPLETE: no more manual button. A log flips to COMPLETE on its own, the moment
+  // every Mission item is ticked, every Cash/Cheque entry is Collected, and there's no
+  // unresolved Status error or undelivered DO left (checked by a database trigger after
+  // each of those actions — this page just reloads afterwards to show the new state).
+  // Reopening is the one thing that still needs a person to do it on purpose, and only
+  // someone with the "reopen/delete" power (admin always has it) can do it.
+  async function reopenLog() {
+    if (!canFix) return;
+    if (!confirm('Reopen this log for editing? It will go back to "In Progress" until everything is done again.')) return;
+    setReopening(true);
+    const { error } = await supabase.rpc('wheels_reopen_log', { log_id: id });
+    setReopening(false);
+    if (error) { alert(error.message); return; }
     load();
   }
 
@@ -222,24 +177,29 @@ export default function LogDetailPage() {
     load();
   }
 
-  // --- Amendment 6: From Delivery — Cash or Stock, add only, no delete ---
+  // --- Latest amendment: From Delivery is Money (Cash or Cheque) or Stocks, add only, no delete.
+  // Cash's DO is picked from this tracker's own To Delivery list, but can be left blank —
+  // customers sometimes pay cash for a PREVIOUS day's DO, not necessarily today's.
+  // Cheque gets its own Cheque Number instead (free text — one cheque can cover several DOs).
   async function addFromDelivery() {
     const r = newFromDelivery;
-    if (r.type === 'cash' && !(r.customer && r.doNumber && r.cashAmount)) return;
+    if (r.type === 'cash' && !(r.customer && r.cashAmount)) return;
+    if (r.type === 'cheque' && !(r.customer && r.chequeNumber && r.cashAmount)) return;
     if (r.type === 'stock' && !(r.customer && r.doNumber && r.description)) return;
     await supabase.from('from_delivery_items').insert({
       dispatch_log_id: id,
       type: r.type,
       customer: r.customer,
-      do_number: `DO-${r.doNumber}`,
-      cash_amount: r.type === 'cash' ? r.cashAmount : null,
+      do_number: r.type === 'stock' ? `DO-${r.doNumber}` : (r.type === 'cash' && r.doNumber ? `DO-${r.doNumber}` : null),
+      cheque_number: r.type === 'cheque' ? r.chequeNumber : null,
+      cash_amount: r.type === 'cash' || r.type === 'cheque' ? r.cashAmount : null,
       description: r.type === 'stock' ? r.description : null,
       collected: false,
     });
-    setNewFromDelivery({ type: 'stock', customer: '', doNumber: '', description: '', cashAmount: '' });
+    setNewFromDelivery({ type: 'stock', customer: '', doNumber: '', chequeNumber: '', description: '', cashAmount: '' });
     load();
   }
-  // Owner, or whoever has the "confirm cash collected" power — checked inside the database.
+  // Needs the "confirm cash/cheque collected" power — checked inside the database (migration 14).
   async function toggleCollected(itemId, current) {
     const { error } = await supabase.rpc('wheels_set_collected', { item_id: itemId, val: !current });
     if (error) alert(error.message);
@@ -300,6 +260,13 @@ export default function LogDetailPage() {
   if (!log) return <div className="min-h-screen bg-paper flex items-center justify-center text-depot-700">Log not found.</div>;
 
   const locked = log.completed;
+
+  // What's still outstanding, if anything — shown as a quiet checklist while the log is open,
+  // so staff can see exactly what's left before it auto-completes (instead of a button to click).
+  const undoneMissions = log.mission_items.filter((m) => !m.done).length;
+  const uncollectedMoney = log.from_delivery_items.filter((f) => (f.type === 'cash' || f.type === 'cheque') && !f.collected).length;
+  const unresolvedErrors = log.status_errors.filter((e) => !e.resolved && e.invoice_number !== 'DO-0').length;
+  const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved && u.invoice_number !== 'DO-0').length;
 
   return (
     <div className="min-h-screen bg-paper pb-16">
@@ -425,16 +392,38 @@ export default function LogDetailPage() {
           )}
         </DetailSection>
 
-        {/* Amendment 6: From Delivery — Cash / Stock */}
+        {/* Mission — moved ahead of From Delivery (latest amendment) */}
+        <DetailSection title="Mission">
+          {log.mission_items.length === 0 && <Empty />}
+          {log.mission_items.map((item) => (
+            <label key={item.id} className="flex items-center gap-2 text-sm py-1.5 border-b border-depot-700/5 last:border-0 cursor-pointer">
+              <input type="checkbox" checked={item.done} disabled={locked} onChange={() => toggleMissionDone(item.id, item.done)} />
+              <span className={item.done ? 'line-through text-depot-700/50' : ''}>{item.task}</span>
+            </label>
+          ))}
+          {!locked && (
+            <div className="flex gap-2 mt-3">
+              <input value={newMissionTask} onChange={(e) => setNewMissionTask(e.target.value)}
+                className="input flex-1" placeholder="Add a mission item" />
+              <button onClick={addMission} className="bg-route text-white text-sm font-medium px-3 rounded-lg">Add</button>
+            </div>
+          )}
+        </DetailSection>
+
+        {/* From Delivery — Money (Cash/Cheque) or Stocks (latest amendment) */}
         <DetailSection title="From Delivery">
           {log.from_delivery_items.length === 0 && <Empty />}
           {log.from_delivery_items.map((item) => (
             <div key={item.id} className="py-2 border-b border-depot-700/5 last:border-0">
-              {item.type === 'cash' ? (
+              {item.type === 'cash' || item.type === 'cheque' ? (
                 <div className="flex items-center justify-between">
                   <div className="text-sm">
-                    <p className="font-medium text-depot-900">Cash {item.cash_amount} — {item.customer}</p>
-                    <p className="text-xs text-depot-700/60">{item.do_number}</p>
+                    <p className="font-medium text-depot-900">
+                      {item.type === 'cash' ? 'Cash' : 'Cheque'} {item.cash_amount} — {item.customer}
+                    </p>
+                    <p className="text-xs text-depot-700/60">
+                      {item.type === 'cash' ? (item.do_number || 'No DO (previous day)') : `Cheque No. ${item.cheque_number}`}
+                    </p>
                   </div>
                   {canCash && !locked ? (
                     <button
@@ -460,49 +449,74 @@ export default function LogDetailPage() {
 
           {!locked && (
             <div className="mt-4">
+              {/* Top level: Money or Stocks */}
               <div className="grid grid-cols-2 gap-2 mb-2">
-                <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'cash' })}
-                  className={`text-sm font-medium py-2 rounded-lg border ${newFromDelivery.type === 'cash' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
-                  Cash
+                <button type="button"
+                  onClick={() => setNewFromDelivery({ ...newFromDelivery, type: newFromDelivery.type === 'stock' ? 'cash' : newFromDelivery.type })}
+                  className={`text-sm font-medium py-2 rounded-lg border ${newFromDelivery.type !== 'stock' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
+                  Money
                 </button>
                 <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'stock' })}
                   className={`text-sm font-medium py-2 rounded-lg border ${newFromDelivery.type === 'stock' ? 'bg-route text-white border-route' : 'text-depot-700 border-depot-700/15'}`}>
-                  Stock
+                  Stocks
                 </button>
               </div>
+
+              {/* Second level, only for Money: Cash or Cheque */}
+              {newFromDelivery.type !== 'stock' && (
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'cash' })}
+                    className={`text-xs font-medium py-1.5 rounded-lg border ${newFromDelivery.type === 'cash' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
+                    Cash
+                  </button>
+                  <button type="button" onClick={() => setNewFromDelivery({ ...newFromDelivery, type: 'cheque' })}
+                    className={`text-xs font-medium py-1.5 rounded-lg border ${newFromDelivery.type === 'cheque' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
+                    Cheque
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <input value={newFromDelivery.customer} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, customer: e.target.value })}
                   className="input" placeholder="Customer" />
-                <InvoiceInput value={newFromDelivery.doNumber} onChange={(v) => setNewFromDelivery({ ...newFromDelivery, doNumber: v })} />
-                {newFromDelivery.type === 'cash' ? (
-                  <input value={newFromDelivery.cashAmount} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, cashAmount: e.target.value })}
-                    className="input" placeholder="e.g. RM500 or USD100" />
-                ) : (
+
+                {newFromDelivery.type === 'cash' && (() => {
+                  const availableDOs = [...new Set(log.to_delivery_items.filter((r) => r.invoice_number).map((r) => r.invoice_number))];
+                  return (
+                    <div>
+                      <select
+                        value={newFromDelivery.doNumber ? `DO-${newFromDelivery.doNumber}` : ''}
+                        onChange={(e) => setNewFromDelivery({ ...newFromDelivery, doNumber: e.target.value ? e.target.value.replace(/^DO-/, '') : '' })}
+                        className="input"
+                      >
+                        <option value="">Leave blank if no DO</option>
+                        {availableDOs.map((d) => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                  );
+                })()}
+                {newFromDelivery.type === 'cheque' && (
+                  <input value={newFromDelivery.chequeNumber} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, chequeNumber: e.target.value })}
+                    className="input" placeholder="Cheque Number" />
+                )}
+                {newFromDelivery.type === 'stock' && (
+                  <InvoiceInput value={newFromDelivery.doNumber || ''} onChange={(v) => setNewFromDelivery({ ...newFromDelivery, doNumber: v })} />
+                )}
+
+                {newFromDelivery.type === 'stock' ? (
                   <input value={newFromDelivery.description} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, description: e.target.value })}
                     className="input" placeholder="Describe the stock" />
+                ) : (
+                  <input value={newFromDelivery.cashAmount} onChange={(e) => setNewFromDelivery({ ...newFromDelivery, cashAmount: e.target.value })}
+                    className="input" placeholder="e.g. RM500 or USD100" />
                 )}
               </div>
+              {newFromDelivery.type === 'cash' && (
+                <p className="text-xs text-depot-700/50 mt-1">Leave blank if no DO — e.g. customer is paying cash for a previous day's DO.</p>
+              )}
               <button onClick={addFromDelivery} className="mt-2 text-route border border-route/30 hover:bg-route-light text-sm font-medium px-3 py-1.5 rounded-lg">
                 + Add
               </button>
-            </div>
-          )}
-        </DetailSection>
-
-        {/* Mission */}
-        <DetailSection title="Mission">
-          {log.mission_items.length === 0 && <Empty />}
-          {log.mission_items.map((item) => (
-            <label key={item.id} className="flex items-center gap-2 text-sm py-1.5 border-b border-depot-700/5 last:border-0 cursor-pointer">
-              <input type="checkbox" checked={item.done} disabled={locked} onChange={() => toggleMissionDone(item.id, item.done)} />
-              <span className={item.done ? 'line-through text-depot-700/50' : ''}>{item.task}</span>
-            </label>
-          ))}
-          {!locked && (
-            <div className="flex gap-2 mt-3">
-              <input value={newMissionTask} onChange={(e) => setNewMissionTask(e.target.value)}
-                className="input flex-1" placeholder="Add a mission item" />
-              <button onClick={addMission} className="bg-route text-white text-sm font-medium px-3 rounded-lg">Add</button>
             </div>
           )}
         </DetailSection>
@@ -565,19 +579,41 @@ export default function LogDetailPage() {
           )}
         </DetailSection>
 
-        {/* Amendment 1: COMPLETE lock — staff can tick, only admin can un-tick */}
+        {/* Latest amendment: no more "Mark As Complete" button — it auto-completes once
+            everything below is clear. Only someone with the reopen power (admin always has it)
+            can bring a completed log back to "In Progress". */}
         <section className={`rounded-xl p-4 border ${locked ? 'bg-bonus-light border-bonus/30' : 'bg-depot-100 border-depot-700/10'}`}>
-          {canFix || !locked ? (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={locked} onChange={toggleCompleted} />
-              <span className={`text-sm font-medium ${locked ? 'text-bonus' : 'text-depot-700'}`}>
-                {locked ? 'Marked COMPLETE — no further changes allowed. Un-tick to reopen.' : 'Mark this dispatch log as COMPLETE'}
-              </span>
-            </label>
+          {!locked ? (
+            <div>
+              <p className="text-sm font-medium text-depot-700">
+                {(undoneMissions + uncollectedMoney + unresolvedErrors + unresolvedUndelivered) === 0
+                  ? 'Everything is filled in — this log will mark itself COMPLETE as soon as you confirm the last item above.'
+                  : 'This log completes itself automatically once everything below is cleared:'}
+              </p>
+              {(undoneMissions + uncollectedMoney + unresolvedErrors + unresolvedUndelivered) > 0 && (
+                <ul className="text-sm text-depot-700/70 mt-1.5 list-disc list-inside">
+                  {undoneMissions > 0 && <li>{undoneMissions} Mission item(s) not yet ticked done</li>}
+                  {uncollectedMoney > 0 && <li>{uncollectedMoney} Cash/Cheque entry(ies) not yet marked Collected</li>}
+                  {unresolvedErrors > 0 && <li>{unresolvedErrors} unresolved Status error(s)</li>}
+                  {unresolvedUndelivered > 0 && <li>{unresolvedUndelivered} undelivered DO(s) still pending</li>}
+                </ul>
+              )}
+            </div>
           ) : (
-            <p className="text-sm font-medium text-bonus">
-              This log is marked COMPLETE. Only Liau (or someone he gives the power to) can reopen it.
-            </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-bonus">
+                Marked COMPLETE — no further changes allowed.
+              </p>
+              {canFix && (
+                <button
+                  onClick={reopenLog}
+                  disabled={reopening}
+                  className="text-xs font-semibold border border-bonus/40 text-bonus hover:bg-bonus/10 px-3 py-1.5 rounded-full shrink-0 disabled:opacity-50"
+                >
+                  {reopening ? 'Reopening…' : 'Reopen for editing'}
+                </button>
+              )}
+            </div>
           )}
         </section>
 

@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { REWARD_THRESHOLD, REWARD_AMOUNT, ERROR_TYPES, DEPARTMENTS, computeRewardEarned } from '@/lib/reward';
+import { REWARD_THRESHOLD, REWARD_AMOUNT, computeRewardEarned } from '@/lib/reward';
 import NavDrawer from '@/components/NavDrawer';
 import CrewSelect from '@/components/CrewSelect';
 
@@ -46,15 +46,16 @@ export default function NewLogPage() {
   // Amendment: "mode" is 'new' (typed fresh) or 'unresolved' (picked from an outstanding Undelivered DO)
   const [toDelivery, setToDelivery] = useState([{ mode: 'new', invoice: '', customer: '', amount: '', resolvesUndeliveredId: null, resolvesErrorId: null }]);
 
-  // --- Part 3: From Delivery ---
-  // Amendment 6: each row is either "cash" (customer, DO#, amount) or "stock" (customer, DO#, description)
-  const [fromDelivery, setFromDelivery] = useState([]);
+  // --- Part 3 (kept in state for when the log is saved — see Mission/From Delivery/Status below) ---
+  // Latest amendment: From Delivery and Status only have real answers once the driver is back
+  // from the run, so at CREATION time these two sections are shown locked/greyed-out instead of
+  // editable. They become fillable as soon as you open the saved log again. These stay as empty
+  // arrays here — nothing is added to them on this page anymore.
+  const [fromDelivery] = useState([]);
+  const [errors] = useState([]);
 
   // --- Part 4: Mission ---
   const [missions, setMissions] = useState([{ task: '', done: false }]);
-
-  // --- Part 5: Status (error flags) ---
-  const [errors, setErrors] = useState([]); // starts empty — only add if there IS an error
 
   // --- Amendment: Undelivered DO — DOs assigned to this driver that never got attempted ---
   const [undelivered, setUndelivered] = useState([]);
@@ -146,13 +147,6 @@ export default function NewLogPage() {
       return;
     }
 
-    const cashDOs = fromDelivery.filter((r) => r.type === 'cash' && r.doNumber).map((r) => r.doNumber);
-    const duplicateCashDO = cashDOs.find((d, idx) => cashDOs.indexOf(d) !== idx);
-    if (duplicateCashDO) {
-      setSubmitError(`DO-${duplicateCashDO} has more than one Cash entry — please remove the duplicate before saving.`);
-      return;
-    }
-
     setSaving(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -193,8 +187,11 @@ export default function NewLogPage() {
         if (tdErr) throw new Error('To Delivery: ' + tdErr.message);
       }
 
+      // From Delivery and Status are locked at creation time (see the two sections below),
+      // so these arrays are always empty right now — kept here only so a saved log's shape
+      // stays consistent with app/log/[id]/page.js, where they're filled in after the fact.
       const validFromDelivery = fromDelivery.filter((r) =>
-        r.type === 'cash' ? (r.customer && r.doNumber && r.cashAmount) : (r.customer && r.doNumber && r.description)
+        r.type === 'cash' ? (r.customer && r.cashAmount) : r.type === 'cheque' ? (r.customer && r.chequeNumber && r.cashAmount) : (r.customer && r.doNumber && r.description)
       );
       if (validFromDelivery.length) {
         const { error: fdErr } = await supabase.from('from_delivery_items').insert(
@@ -202,8 +199,9 @@ export default function NewLogPage() {
             dispatch_log_id: logId,
             type: r.type,
             customer: r.customer,
-            do_number: r.doNumber ? `DO-${r.doNumber}` : null,
-            cash_amount: r.type === 'cash' ? r.cashAmount : null,
+            do_number: r.type !== 'cheque' && r.doNumber ? `DO-${r.doNumber}` : null,
+            cheque_number: r.type === 'cheque' ? r.chequeNumber : null,
+            cash_amount: r.type === 'cash' || r.type === 'cheque' ? r.cashAmount : null,
             description: r.type === 'stock' ? r.description : null,
             collected: false,
           }))
@@ -524,87 +522,7 @@ export default function NewLogPage() {
           <AddButton onClick={() => addRow(setUndelivered)({ invoice: '', customer: '', amount: '' })} label="Add undelivered DO" variant="flag" />
         </section>
 
-        {/* PART 3: FROM DELIVERY */}
-        <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
-          <h2 className="font-display font-semibold text-depot-900 mb-4">From Delivery</h2>
-          <p className="text-xs text-depot-700/60 mb-3">What was brought back from deliveries — cash collected, or stock returned.</p>
-          {fromDelivery.map((row, i) => (
-            <div key={i} className="mb-3 pb-3 border-b border-depot-700/5 last:border-0">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="flex-1 grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => updateRow(setFromDelivery)(i, 'type', 'cash')}
-                    className={`text-sm font-medium py-2 rounded-lg border ${row.type === 'cash' ? 'bg-bonus text-white border-bonus' : 'text-depot-700 border-depot-700/15'}`}>
-                    Cash
-                  </button>
-                  <button type="button" onClick={() => updateRow(setFromDelivery)(i, 'type', 'stock')}
-                    className={`text-sm font-medium py-2 rounded-lg border ${row.type === 'stock' ? 'bg-route text-white border-route' : 'text-depot-700 border-depot-700/15'}`}>
-                    Stock
-                  </button>
-                </div>
-                <button type="button" onClick={() => removeRow(setFromDelivery)(i)} className="text-depot-700/40 hover:text-flag text-lg px-1">×</button>
-              </div>
-
-              {row.type === 'cash' ? (
-                (() => {
-                  // DO must match what was actually delivered today — sourced from this
-                  // tracker's own To Delivery list. A DO already used by another Cash row
-                  // is removed from the list so the same DO can't be entered twice.
-                  const usedCashDOs = fromDelivery
-                    .filter((r, idx) => idx !== i && r.type === 'cash' && !r.doIsOther && r.doNumber)
-                    .map((r) => `DO-${r.doNumber}`);
-                  const availableDOs = [...new Set(toDelivery.filter((r) => r.invoice).map((r) => `DO-${r.invoice}`))]
-                    .filter((d) => !usedCashDOs.includes(d));
-                  return (
-                    <div className="mb-2">
-                      <select
-                        value={row.doIsOther ? 'OTHERS' : (row.doNumber ? `DO-${row.doNumber}` : '')}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (v === 'OTHERS') {
-                            updateRow(setFromDelivery)(i, 'doIsOther', true);
-                            updateRow(setFromDelivery)(i, 'doNumber', '');
-                          } else {
-                            updateRow(setFromDelivery)(i, 'doIsOther', false);
-                            updateRow(setFromDelivery)(i, 'doNumber', v ? v.replace(/^DO-/, '') : '');
-                          }
-                        }}
-                        className="input"
-                      >
-                        <option value="">Select DO</option>
-                        {availableDOs.map((d) => <option key={d} value={d}>{d}</option>)}
-                        <option value="OTHERS">Others (type manually)</option>
-                      </select>
-                      {row.doIsOther && (
-                        <div className="mt-2">
-                          <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()
-              ) : (
-                <div className="mb-2">
-                  <InvoiceInput value={row.doNumber || ''} onChange={(v) => updateRow(setFromDelivery)(i, 'doNumber', v)} />
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <input value={row.customer || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'customer', e.target.value)}
-                  className="input" placeholder="Customer" />
-                {row.type === 'cash' ? (
-                  <input value={row.cashAmount || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'cashAmount', e.target.value)}
-                    className="input" placeholder="e.g. RM500 or USD100" />
-                ) : (
-                  <input value={row.description || ''} onChange={(e) => updateRow(setFromDelivery)(i, 'description', e.target.value)}
-                    className="input" placeholder="Describe the stock" />
-                )}
-              </div>
-            </div>
-          ))}
-          <AddButton onClick={() => addRow(setFromDelivery)({ type: 'stock', customer: '', doNumber: '', doIsOther: false, description: '', cashAmount: '' })} label="Add item" />
-        </section>
-
-        {/* PART 4: MISSION */}
+        {/* PART 4: MISSION — moved ahead of From Delivery (latest amendment) */}
         <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
           <h2 className="font-display font-semibold text-depot-900 mb-4">Mission</h2>
           <p className="text-xs text-depot-700/60 mb-3">Things that need to be done.</p>
@@ -621,45 +539,28 @@ export default function NewLogPage() {
           <AddButton onClick={() => addRow(setMissions)({ task: '', done: false })} label="Add task" />
         </section>
 
-        {/* PART 5: STATUS (error flags) */}
-        <section className="bg-white rounded-xl p-5 shadow-sm border border-depot-700/10">
-          <h2 className="font-display font-semibold text-depot-900 mb-1">Status</h2>
-          <p className="text-xs text-depot-700/60 mb-3">
-            Flag any error found in the To Delivery section. It stays active until marked resolved.
+        {/* PART 3: FROM DELIVERY — locked at creation. Latest amendment: cash/cheque/stock
+            only have real answers once the driver is back, so this section is shown greyed
+            out here and becomes fillable once you open the saved log again. */}
+        <section className="bg-depot-100/60 rounded-xl p-5 border border-depot-700/10 opacity-70">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="font-display font-semibold text-depot-700/70">From Delivery</h2>
+            <span className="text-xs font-semibold bg-depot-700/10 text-depot-700/60 px-2 py-1 rounded-full">Locked until saved</span>
+          </div>
+          <p className="text-xs text-depot-700/60">
+            Cash, cheque and stock brought back only make sense once the driver returns — save this log first, then open it to fill this in.
           </p>
-          {errors.map((row, i) => (
-            <div key={i} className="mb-3 pb-3 border-b border-depot-700/5 last:border-0">
-              <RowGroup onRemove={() => removeRow(setErrors)(i)}>
-                <select value={row.errorType} onChange={(e) => updateRow(setErrors)(i, 'errorType', e.target.value)} className="input">
-                  <option value="">What error?</option>
-                  {ERROR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <select value={row.department} onChange={(e) => updateRow(setErrors)(i, 'department', e.target.value)} className="input">
-                  <option value="">Which department's fault?</option>
-                  {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <select value={row.invoice} onChange={(e) => updateRow(setErrors)(i, 'invoice', e.target.value)} className="input">
-                  <option value="">Which DO?</option>
-                  {[...new Set(toDelivery.filter((r) => r.invoice).map((r) => `DO-${r.invoice}`))].map((inv) => (
-                    <option key={inv} value={inv}>{inv}</option>
-                  ))}
-                </select>
-              </RowGroup>
-              {/* Amendment 7: description box for special cases */}
-              <textarea
-                value={row.description || ''}
-                onChange={(e) => updateRow(setErrors)(i, 'description', e.target.value)}
-                className="input mt-2"
-                rows={2}
-                placeholder="Describe the special case (optional)"
-              />
-            </div>
-          ))}
-          <AddButton
-            onClick={() => addRow(setErrors)({ errorType: '', department: '', invoice: '', description: '' })}
-            label="Flag an error"
-            variant="flag"
-          />
+        </section>
+
+        {/* PART 5: STATUS — also locked at creation, same reason as above. */}
+        <section className="bg-depot-100/60 rounded-xl p-5 border border-depot-700/10 opacity-70">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="font-display font-semibold text-depot-700/70">Status</h2>
+            <span className="text-xs font-semibold bg-depot-700/10 text-depot-700/60 px-2 py-1 rounded-full">Locked until saved</span>
+          </div>
+          <p className="text-xs text-depot-700/60">
+            Errors are usually only found once the driver is back from the run — save this log first, then open it to flag any.
+          </p>
         </section>
 
         {/* REWARD PREVIEW */}
@@ -750,3 +651,4 @@ function AddButton({ onClick, label, variant = 'default' }) {
     </button>
   );
 }
+
