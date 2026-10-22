@@ -36,7 +36,7 @@ export default function MonthPage() {
       .from('dispatch_logs')
       .select(`
         id, driver_name, log_date, to_delivery_total, completed,
-        from_delivery_items ( type, cash_amount, customer, collected ),
+        from_delivery_items ( type, cash_amount, cheque_number, customer, collected ),
         status_errors ( invoice_number, error_type, department, resolved ),
         undelivered_items ( invoice_number, customer, amount, resolved )
       `)
@@ -65,7 +65,7 @@ export default function MonthPage() {
         {!loading && logs.length === 0 && <p className="text-depot-700">No dispatch logs in this month.</p>}
 
         {logs.map((log) => {
-          const cashEntries = (log.from_delivery_items || []).filter((f) => f.type === 'cash');
+          const moneyEntries = (log.from_delivery_items || []).filter((f) => f.type === 'cash' || f.type === 'cheque');
           const errors = log.status_errors || [];
           const undeliveredEntries = log.undelivered_items || [];
           const dateLabel = new Date(log.log_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
@@ -89,11 +89,11 @@ export default function MonthPage() {
 
               <p className="text-sm text-depot-700 mt-2">To Delivery: <strong>RM {Number(log.to_delivery_total).toLocaleString()}</strong></p>
 
-              {cashEntries.length > 0 && (
+              {moneyEntries.length > 0 && (
                 <div className="mt-1 space-y-0.5">
-                  {cashEntries.map((c, i) => (
+                  {moneyEntries.map((c, i) => (
                     <p key={i} className="text-xs text-depot-700/70">
-                      Cash {c.cash_amount} from {c.customer} — {c.collected ? 'Collected' : 'Pending'}
+                      {c.type === 'cash' ? 'Cash' : 'Cheque'} {c.cash_amount} from {c.customer} — {c.collected ? 'Collected' : 'Pending'}
                     </p>
                   ))}
                 </div>
