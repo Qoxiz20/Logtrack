@@ -20,6 +20,7 @@ export default function LogDetailPage() {
   const [canCash, setCanCash] = useState(false); // power: confirm cash/cheque collected
   const [deleting, setDeleting] = useState(false);
   const [reopening, setReopening] = useState(false);
+  const [markingComplete, setMarkingComplete] = useState(false);
 
   // Amendment 1: header edit (driver/foreman/loader/plate/date), only while not completed
   const [driversList, setDriversList] = useState([]);
@@ -81,9 +82,11 @@ export default function LogDetailPage() {
 
     if (error) {
       setLoadError(error.message);
-    } else {
-      setLog(data);
+      setLoading(false);
+      return;
     }
+
+    setLog(data);
     setLoading(false);
   }
 
@@ -135,6 +138,18 @@ export default function LogDetailPage() {
     setReopening(true);
     const { error } = await supabase.rpc('wheels_reopen_log', { log_id: id });
     setReopening(false);
+    if (error) { alert(error.message); return; }
+    load();
+  }
+
+  // Fallback for the one case nothing else triggers: a day with no Mission ticks, no
+  // Cash/Cheque to collect, no errors — just To Delivery, all ticked back. The database
+  // still has the final say (it blocks this the same way it blocks the automatic checks
+  // if anything is actually outstanding), so this button can't skip anything either.
+  async function markComplete() {
+    setMarkingComplete(true);
+    const { error } = await supabase.from('dispatch_logs').update({ completed: true }).eq('id', id);
+    setMarkingComplete(false);
     if (error) { alert(error.message); return; }
     load();
   }
@@ -261,12 +276,15 @@ export default function LogDetailPage() {
 
   const locked = log.completed;
 
-  // What's still outstanding, if anything — shown as a quiet checklist while the log is open,
-  // so staff can see exactly what's left before it auto-completes (instead of a button to click).
+  // What's still outstanding, if anything — shown as a quiet checklist while the log is open.
+  // Completion is manual: "Mark As Complete" is clickable only when nothing is outstanding
+  // below. The database enforces the same rule independently, so it can't be bypassed.
   const undoneMissions = log.mission_items.filter((m) => !m.done).length;
+  const unreturnedToDelivery = log.to_delivery_items.filter((t) => !t.returned).length;
   const uncollectedMoney = log.from_delivery_items.filter((f) => (f.type === 'cash' || f.type === 'cheque') && !f.collected).length;
   const unresolvedErrors = log.status_errors.filter((e) => !e.resolved && e.invoice_number !== 'DO-0').length;
   const unresolvedUndelivered = log.undelivered_items.filter((u) => !u.resolved && u.invoice_number !== 'DO-0').length;
+  const outstandingCount = undoneMissions + unreturnedToDelivery + uncollectedMoney + unresolvedErrors + unresolvedUndelivered;
 
   return (
     <div className="min-h-screen bg-paper pb-16">
@@ -579,25 +597,31 @@ export default function LogDetailPage() {
           )}
         </DetailSection>
 
-        {/* Latest amendment: no more "Mark As Complete" button — it auto-completes once
-            everything below is clear. Only someone with the reopen power (admin always has it)
-            can bring a completed log back to "In Progress". */}
+        {/* Manual completion only — button unlocks when everything above is cleared. */}
         <section className={`rounded-xl p-4 border ${locked ? 'bg-bonus-light border-bonus/30' : 'bg-depot-100 border-depot-700/10'}`}>
           {!locked ? (
             <div>
               <p className="text-sm font-medium text-depot-700">
-                {(undoneMissions + uncollectedMoney + unresolvedErrors + unresolvedUndelivered) === 0
-                  ? 'Everything is filled in — this log will mark itself COMPLETE as soon as you confirm the last item above.'
-                  : 'This log completes itself automatically once everything below is cleared:'}
+                {outstandingCount === 0
+                  ? 'Everything is cleared — you can mark this log as complete.'
+                  : 'Mark As Complete unlocks once everything below is cleared:'}
               </p>
-              {(undoneMissions + uncollectedMoney + unresolvedErrors + unresolvedUndelivered) > 0 && (
+              {outstandingCount > 0 && (
                 <ul className="text-sm text-depot-700/70 mt-1.5 list-disc list-inside">
+                  {unreturnedToDelivery > 0 && <li>{unreturnedToDelivery} To Delivery item(s) not yet ticked back</li>}
                   {undoneMissions > 0 && <li>{undoneMissions} Mission item(s) not yet ticked done</li>}
                   {uncollectedMoney > 0 && <li>{uncollectedMoney} Cash/Cheque entry(ies) not yet marked Collected</li>}
                   {unresolvedErrors > 0 && <li>{unresolvedErrors} unresolved Status error(s)</li>}
                   {unresolvedUndelivered > 0 && <li>{unresolvedUndelivered} undelivered DO(s) still pending</li>}
                 </ul>
               )}
+              <button
+                onClick={markComplete}
+                disabled={markingComplete || outstandingCount > 0}
+                className="mt-3 bg-bonus text-white text-sm font-medium px-4 py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {markingComplete ? 'Marking Complete…' : 'Mark As Complete'}
+              </button>
             </div>
           ) : (
             <div className="flex items-center justify-between gap-3">
@@ -673,4 +697,3 @@ function DetailSection({ title, children }) {
 function Empty() {
   return <p className="text-sm text-depot-700/40">Nothing recorded.</p>;
 }
-
