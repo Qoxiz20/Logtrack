@@ -1,13 +1,14 @@
 'use client';
 
 // One crew box (Driver, Foreman 1, Foreman 2 or Loader).
-// Who is listed comes from LHG Journey, automatically:
-//   - people linked to Journey: by the Wheels rules in Journey -> Settings
-//     (today: Driver = Logistics dept, Foreman = Warehouse dept, Loader = position Officer, any dept)
-//   - older entries added here in Wheels: by the role they were given here.
+// Who is listed comes ONLY from LHG Journey, automatically: people linked to a Journey
+// employee, placed in a box by the Wheels rules in Journey -> Settings (department or position).
+// Wheels never keeps its own staff list: old hand-typed entries (not linked to Journey) are no
+// longer offered, which is what stops the same person appearing twice. Names already saved on
+// old logs still show on those logs.
 // Anyone already in another box on this log is left out, so one person can't fill two slots.
 export function inBox(person, slot, rules) {
-  if (!person.employee_id) return person.role === slot;
+  if (!person.employee_id) return false; // not in Journey -> not selectable
   return rules.some((r) => r.slot === slot && ((r.department && r.department === person.department) || (r.position && r.position === person.position)));
 }
 
